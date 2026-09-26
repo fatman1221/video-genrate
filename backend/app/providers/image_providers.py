@@ -20,6 +20,7 @@ import httpx
 from ..config import settings
 from .base import GenerationResult, ImageProvider, ProviderError, registry
 from . import local_engine as engine
+from . import runtime
 
 
 class LocalImageProvider(ImageProvider):
@@ -70,9 +71,14 @@ class ComfyUIImageProvider(ImageProvider):
     capabilities = ("text_to_image", "image_to_image", "workflow_json", "lora", "controlnet")
     doc = "通过 ComfyUI HTTP API 提交工作流。需在设置中配置 COMFYUI_BASE_URL 并保持服务运行。"
 
-    def __init__(self) -> None:
-        self.base_url = settings.comfyui_base_url.rstrip("/")
-        self.api_key = settings.comfyui_api_key
+    # 连接信息动态读取：设置页改完即时生效，不需要重启进程
+    @property
+    def base_url(self) -> str:
+        return runtime.resolve("image", "comfyui", "base_url", settings.comfyui_base_url).rstrip("/")
+
+    @property
+    def api_key(self) -> str:
+        return runtime.resolve("image", "comfyui", "api_key", settings.comfyui_api_key)
 
     @property
     def functional(self) -> bool:  # type: ignore[override]
@@ -147,7 +153,8 @@ class ComfyUIImageProvider(ImageProvider):
         except Exception:  # pragma: no cover
             pass
         return GenerationResult(
-            file_path=str(out), provider=self.name, model=params.get("ckpt_name", "comfyui"),
+            file_path=str(out), provider=self.name,
+            model=params.get("ckpt_name") or runtime.model_of("image", "comfyui") or "comfyui",
             workflow=params.get("workflow_name", "comfyui_default"), parameters=params,
             width=w, height=h, format=out.suffix.lstrip("."), size_bytes=out.stat().st_size,
             prompt=prompt, negative_prompt=negative_prompt, seed=seed,
@@ -164,8 +171,20 @@ class CloudImageProvider(ImageProvider):
     doc = "通用云端适配器：POST {CLOUD_IMAGE_BASE_URL} 提交 {prompt,width,height,seed}，返回 {url|b64_json}。"
 
     @property
+    def base_url(self) -> str:
+        return runtime.resolve("image", "cloud", "base_url", settings.cloud_image_base_url)
+
+    @property
+    def api_key(self) -> str:
+        return runtime.resolve("image", "cloud", "api_key", settings.cloud_image_api_key)
+
+    @property
+    def default_model(self) -> str:
+        return runtime.model_of("image", "cloud")
+
+    @property
     def functional(self) -> bool:  # type: ignore[override]
-        return bool(settings.cloud_image_base_url and settings.cloud_image_api_key)
+        return bool(self.base_url and self.api_key)
 
     def generate(self, *, prompt: str, negative_prompt: str = "", width: int = 1280,
                  height: int = 720, seed: int | None = None,
@@ -173,17 +192,24 @@ class CloudImageProvider(ImageProvider):
                  parameters: dict[str, Any] | None = None) -> GenerationResult:
         if not self.functional:
             raise ProviderError(
-                "云端图像 Provider 未配置（需要 CLOUD_IMAGE_BASE_URL / CLOUD_IMAGE_API_KEY）",
+                "云端图像 Provider 未配置（请在『系统设置』里填写 Base URL 与 API Key，"
+                "或设置 CLOUD_IMAGE_BASE_URL / CLOUD_IMAGE_API_KEY 环境变量）",
                 retryable=False,
             )
         started = time.time()
         params = dict(parameters or {})
+        body: dict[str, Any] = {
+            "prompt": prompt, "negative_prompt": negative_prompt,
+            "width": width, "height": height, "seed": seed, **params.get("extra", {}),
+        }
+        model = params.get("model") or self.default_model
+        if model:
+            body["model"] = model
         with httpx.Client(timeout=float(params.get("timeout", 600))) as client:
             resp = client.post(
-                settings.cloud_image_base_url,
-                headers={"Authorization": f"Bearer {settings.cloud_image_api_key}"},
-                json={"prompt": prompt, "negative_prompt": negative_prompt,
-                      "width": width, "height": height, "seed": seed, **params.get("extra", {})},
+                self.base_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=body,
             )
             resp.raise_for_status()
             payload = resp.json()
@@ -196,7 +222,8 @@ class CloudImageProvider(ImageProvider):
         with httpx.Client(timeout=300) as client:
             out.write_bytes(client.get(url).content)
         return GenerationResult(
-            file_path=str(out), provider=self.name, model=payload.get("model", "cloud-image"),
+            file_path=str(out), provider=self.name,
+            model=payload.get("model") or model or "cloud-image",
             workflow="cloud_text_to_image", parameters=params,
             width=width, height=height, format="png", size_bytes=out.stat().st_size,
             prompt=prompt, negative_prompt=negative_prompt, seed=seed,

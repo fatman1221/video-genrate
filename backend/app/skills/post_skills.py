@@ -5,13 +5,16 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ..core.constants import AssetType, ShotStatus, TaskStatus, TaskType, WorkflowState
+from ..core.constants import (
+    AssetGroup, AssetType, ModelSettingKind, ShotStatus, TaskStatus, TaskType, WorkflowState,
+)
 from ..models import Asset, BrowserTask, Project, Shot
 from ..providers import register_all, registry
 from ..services import agent_log
 from ..services import assets as assets_svc
 from ..services import planner, projects as projects_svc, quality as quality_svc
-from ..services import serializers as S, tasks as tasks_svc, workflow as workflow_svc
+from ..services import serializers as S, settings as settings_svc
+from ..services import tasks as tasks_svc, workflow as workflow_svc
 from .base import SkillContext, SkillError, skill
 
 
@@ -350,6 +353,75 @@ def list_assets(ctx: SkillContext, *, project_id: str | None = None, type: str |
 
 
 @skill(
+    name="get_asset_center", category="asset",
+    description=("素材中心总览：按「人物图 / 场景图 / 音频 / 图片 / 视频」分类返回素材与统计。"
+                 "不传 project_id 即跨项目聚合；unassigned=true 只看不属于任何项目的独立素材。"),
+    tags=("asset", "read"),
+    input_schema={"type": "object", "properties": {
+        "project_id": {"type": "string", "description": "留空 = 跨项目聚合"},
+        "unassigned": {"type": "boolean", "default": False,
+                       "description": "true = 只看不属于任何项目的独立素材"},
+        "group": {"type": "string",
+                  "description": "character / scene / audio / image / video；留空返回全部"},
+        "keyword": {"type": "string"},
+        "limit": {"type": "integer", "default": 200}, "offset": {"type": "integer", "default": 0}}},
+)
+def get_asset_center(ctx: SkillContext, *, project_id: str | None = None,
+                     unassigned: bool = False, group: str = "",
+                     keyword: str | None = None,
+                     limit: int = 200, offset: int = 0) -> dict[str, Any]:
+    types = assets_svc.types_of_group(group) if group else None
+    rows = assets_svc.list_assets(
+        ctx.db, project_id=project_id, asset_types=types, unassigned=unassigned,
+        keyword=keyword or None, limit=limit, offset=offset,
+    )
+    return {
+        "assets": [S.asset_brief(a) for a in rows],
+        "count": len(rows),
+        "stats": assets_svc.center_stats(ctx.db, project_id=project_id, unassigned=unassigned),
+    }
+
+
+@skill(
+    name="generate_standalone_voice", category="audio",
+    description=("独立合成一段语音并存入素材库 —— 不需要项目、不需要镜头。"
+                 "适合试音、旁白素材、配音片段；产物出现在素材中心的「音频」分区。"),
+    tags=("audio", "tts", "generate", "asset"),
+    input_schema={"type": "object", "properties": {
+        "text": {"type": "string", "description": "要合成的文本"},
+        "voice": {"type": "string", "description": "音色名，留空用默认音色"},
+        "rate": {"type": "integer", "description": "语速，留空用默认"},
+        "name": {"type": "string", "description": "素材名，留空自动截取文本生成"},
+        "provider": {"type": "string", "description": "tts 引擎（local / cloud），留空用当前默认"},
+        "project_id": {"type": "string", "description": "可选：把素材归属到某个项目"}},
+        "required": ["text"]},
+)
+def generate_standalone_voice(ctx: SkillContext, *, text: str, voice: str = "", rate: int = 0,
+                              name: str = "", provider: str | None = None,
+                              project_id: str | None = None) -> dict[str, Any]:
+    if not text.strip():
+        raise SkillError("文本为空，无法合成语音", code="BAD_INPUT")
+    register_all()
+    try:
+        tts = registry.get("tts", provider or None)
+    except Exception as exc:  # noqa: BLE001
+        raise SkillError(f"未找到可用的 TTS 引擎：{exc}", code="NOT_FOUND") from exc
+
+    result = tts.synthesize(text=text, voice=voice, rate=int(rate or 0))
+    asset = assets_svc.ingest_result(
+        ctx.db, project_id=project_id, result=result, asset_type=AssetType.VOICE,
+        name=name or f"语音 {text.strip()[:14]}",
+        extra={"role": "standalone_voice", "voice": voice or "(默认)", "text": text},
+    )
+    ctx.log(f"独立语音已生成并入库：{asset.id}（{result.duration:.1f}s / {result.provider}）")
+    return {
+        "asset_id": asset.id, "name": asset.name, "url": asset.url,
+        "duration": asset.duration, "provider": result.provider, "model": result.model,
+        "project_id": asset.project_id,
+    }
+
+
+@skill(
     name="get_asset", category="asset",
     description="获取单个素材的完整信息（含 prompt / model / provider / workflow / parameters）。",
     tags=("asset", "read"),
@@ -505,19 +577,40 @@ def list_providers(ctx: SkillContext, *, kind: str | None = None) -> dict[str, A
 
 @skill(
     name="set_default_provider", category="provider",
-    description="切换某类能力的默认 Provider（例如把视频生成切到 comfyui）。",
-    tags=("provider", "write"),
+    description=("切换某类能力的默认引擎（生图 / 图生视频 / 语音生成），"
+                 "并可同时设置模型名与连接凭证（Base URL、API Key）。"
+                 "写入数据库，重启后依然生效。"),
+    tags=("provider", "write", "settings"),
     input_schema={"type": "object", "properties": {
-        "kind": {"type": "string"}, "name": {"type": "string"}},
+        "kind": {"type": "string", "enum": list(ModelSettingKind.ALL)},
+        "name": {"type": "string", "description": "引擎名，如 local / comfyui / cloud"},
+        "model": {"type": "string", "description": "该引擎下使用的具体模型名，可留空"},
+        "credentials": {"type": "object",
+                        "description": "如 {base_url, api_key}；字段传空字符串表示清除该项"}},
         "required": ["kind", "name"]},
 )
-def set_default_provider(ctx: SkillContext, *, kind: str, name: str) -> dict[str, Any]:
-    register_all()
+def set_default_provider(ctx: SkillContext, *, kind: str, name: str,
+                         model: str | None = None,
+                         credentials: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        registry.set_default(kind, name)
-    except Exception as exc:  # noqa: BLE001
+        view = settings_svc.update_setting(
+            ctx.db, kind, name, model=model, credentials=credentials, actor=ctx.actor,
+        )
+    except ValueError as exc:
         raise SkillError(str(exc), code="NOT_FOUND") from exc
-    return {"kind": kind, "default": registry.default_name(kind)}
+    return {"kind": kind, "default": view["name"], "model": view["model"],
+            "is_default": view["is_default"], "ready": view["ready"]}
+
+
+@skill(
+    name="list_provider_settings", category="provider",
+    description=("查看「生图 / 图生视频 / 语音生成」三类模型的当前设置："
+                 "可选的本地与云端引擎、各自是否可用、模型名、凭证是否已配置（密钥掩码返回）。"),
+    tags=("provider", "read", "settings"),
+    input_schema={"type": "object", "properties": {}},
+)
+def list_provider_settings(ctx: SkillContext) -> dict[str, Any]:
+    return settings_svc.settings_overview(ctx.db)
 
 
 @skill(

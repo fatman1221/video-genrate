@@ -20,6 +20,8 @@ def asset_brief(asset: Asset | None) -> dict[str, Any] | None:
         return None
     return {
         "asset_id": asset.id,
+        # None = 不属于任何项目的独立素材（素材中心里直接生成/保存的）
+        "project_id": asset.project_id,
         "type": asset.type,
         "name": asset.name,
         "url": asset.url,

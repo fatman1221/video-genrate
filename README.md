@@ -37,7 +37,7 @@ WorkBuddy / Codex   ──思考、规划、决策、调用 Skill──►  本�
 | # | 原则 | 落地位置 |
 |---|------|----------|
 | 1 | Agent 负责思考，Backend 负责状态与执行 | `backend/app/skills`（契约）+ `executors`（执行） |
-| 2 | 业务逻辑不写死在 Prompt 里 | 全部能力抽象为 84 个 Skill，见 `/api/skills` |
+| 2 | 业务逻辑不写死在 Prompt 里 | 全部能力抽象为 87 个 Skill，见 `/api/skills` |
 | 3 | 每个 Skill 有清晰输入 / 输出 / 状态 / 错误 | `skills/base.py` JSON Schema 校验 + 统一返回结构 |
 | 4 | 所有生成任务可追踪 | `tasks` 表：payload / result / logs / attempts / error |
 | 5 | 素材与 Project / Scene / Shot 关联 | `assets` 表 + `Asset Center` API |
@@ -63,6 +63,7 @@ video-skill/
 │   │   ├── core/constants.py       状态枚举 + Workflow 状态机
 │   │   ├── providers/              ★ 执行引擎抽象层
 │   │   │   ├── base.py             Provider 接口 + 注册表
+│   │   │   ├── runtime.py          运行时配置层（默认引擎 / 模型名 / 云端凭证）
 │   │   │   ├── local_engine.py     ffmpeg / PIL / say 底层封装
 │   │   │   ├── image_providers.py  local / comfyui / cloud
 │   │   │   ├── video_providers.py  local / comfyui / cloud
@@ -71,7 +72,7 @@ video-skill/
 │   │   │   ├── enhance_providers.py
 │   │   │   ├── processing_providers.py
 │   │   │   └── browser_providers.py
-│   │   ├── skills/                 ★ Agent 调用契约层（84 个 Skill）
+│   │   ├── skills/                 ★ Agent 调用契约层（87 个 Skill）
 │   │   │   ├── base.py             Skill / Registry / JSON Schema 校验
 │   │   │   ├── content_skills.py   Project / Script / Storyboard / Shot / Character
 │   │   │   ├── series_skills.py    连续剧：Series / Episode / 系列级角色
@@ -80,13 +81,13 @@ video-skill/
 │   │   ├── executors/              ★ 异步任务执行
 │   │   │   ├── queue.py            DB 即队列 + worker 池 + 重试 + 断点恢复
 │   │   │   └── handlers.py         20 类任务的真实执行逻辑
-│   │   ├── services/               业务服务（assets / workflow / projects / series / characters / quality / planner / tasks）
-│   │   └── routers/                REST 端点（projects / series / content / assets / tasks / skills / system）
+│   │   ├── services/               业务服务（assets / workflow / projects / series / characters / quality / planner / tasks / settings）
+│   │   └── routers/                REST 端点（projects / series / content / assets / settings / tasks / skills / system）
 │   ├── storage/                    文件存储根目录（图片 / 视频 / 音频 / 字幕）
 │   ├── agent_cli.py                ★ 给 Agent 用的 CLI
 │   └── requirements.txt
 ├── frontend/                       React 18 + Vite + MUI（紫色主题）
-│   └── src/{pages,components}      项目列表 / 项目详情 / 连续剧列表 / 连续剧详情
+│   └── src/{pages,components}      项目列表 / 项目详情 / 连续剧 / 素材中心 / 系统设置
 ├── scripts/
 │   ├── e2e_check.py                端到端链路验证脚本
 │   ├── build_intro.py              介绍页构建（截图裁切 + base64 内嵌）
@@ -224,14 +225,39 @@ processing   ffmpeg(拼接/裁剪/混音/烧字幕/合成/封面)
 browser      agent_browser(仅登记任务 + playbook，由 Agent 执行)
 ```
 
-切换默认 Provider：
+切换默认 Provider（写入数据库，**重启后依然生效**）：
 
 ```bash
+# 切到 ComfyUI 做图生视频
 curl -X POST http://127.0.0.1:8077/api/skills/set_default_provider/invoke \
-     -H 'Content-Type: application/json' -d '{"kind":"video","name":"comfyui"}'
+     -H 'Content-Type: application/json' \
+     -d '{"kind":"video","name":"comfyui"}'
+
+# 也可同时设定模型名与云端凭证
+curl -X POST http://127.0.0.1:8077/api/skills/set_default_provider/invoke \
+     -H 'Content-Type: application/json' \
+     -d '{"kind":"tts","name":"cloud","model":"cosyvoice-v2",
+          "credentials":{"base_url":"https://...","api_key":"sk-..."}}'
 ```
 
-接入 ComfyUI 只需在 `backend/.env` 填 `COMFYUI_BASE_URL`，并在调用时传 `parameters.workflow_json`
+Web UI 上就是**「系统设置」页**：为「生图模型 / 图生视频模型 / 语音生成模型」
+三类各选一个引擎（本地 / ComfyUI / 云端），填模型名与连接信息。
+
+### 配置的存放与生效顺序
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| 1 | `providers` 表 `is_default` / `config.model` / `config.credentials` | **用户设置，唯一真相来源**，启动时恢复 |
+| 2 | 环境变量（`backend/.env`） | 首次运行的默认值，被用户设置覆盖 |
+| 3 | 代码默认值 | 兜底 |
+
+- Provider 实现**每次调用时**向 `providers/runtime.py` 查询连接信息，
+  所以设置页改完**立即生效，不需要重启**
+- `sync_providers_table()` 每次启动只刷新「代码侧派生字段」（名称 / 能力 / 可用性），
+  **不会覆盖**用户的默认引擎、模型名与凭证
+- 云端 API Key 只以掩码（`••••1234`）回显，不返回明文
+
+接入 ComfyUI 只需在「系统设置」或 `backend/.env` 填 ComfyUI 地址，并在调用时传 `parameters.workflow_json`
 （API 格式工作流，支持 `{{prompt}} / {{width}} / {{height}} / {{frames}} / {{seed}} / {{image}}` 占位符）。
 
 ---
@@ -243,6 +269,8 @@ curl -X POST http://127.0.0.1:8077/api/skills/set_default_provider/invoke \
 
 - 二进制文件**不入库**，只存 `file_path` + `url`
 - `shots` 是核心实体：image/video/voice/subtitle 各自的 `*_asset_id` 与状态独立
+- `assets.project_id` **可为空**：空值表示素材中心里独立生成/保存的素材
+  （例如直接合成的语音），不属于任何项目，落在 `storage/{类型}/_library/`
 - `tasks` 即任务队列：状态、进度、尝试次数、错误详情、逐条执行日志
 - `series` 是连续剧层：`projects.series_id` + `episode_no` 表示「第几集」，
   `characters.series_id` 表示系列级角色（跨集复用）。详见 [docs/SERIES.md](docs/SERIES.md)

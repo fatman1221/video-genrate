@@ -233,7 +233,7 @@ curl -s http://127.0.0.1:8077/api/health | head -c 200
 curl -s http://127.0.0.1:8077/api/projects | python3 -c "import sys,json;print('项目数:',json.load(sys.stdin)['total'])"
 curl -s http://127.0.0.1:8077/api/series   | python3 -c "import sys,json;print('系列数:',json.load(sys.stdin)['total'])"
 
-# 3. Skill 数量（应为 84）
+# 3. Skill 数量（应为 87）
 curl -s http://127.0.0.1:8077/api/skills | python3 -c "import sys,json;d=json.load(sys.stdin);print('Skill:',d.get('total'))"
 
 # 4. 前端可达

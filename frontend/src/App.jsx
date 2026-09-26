@@ -7,6 +7,8 @@ import ProjectList from './pages/ProjectList'
 import ProjectDetail from './pages/ProjectDetail'
 import SeriesList from './pages/SeriesList'
 import SeriesDetail from './pages/SeriesDetail'
+import AssetCenter from './pages/AssetCenter'
+import Settings from './pages/Settings'
 import { useApi } from './api'
 
 function NavItem({ to, label }) {
@@ -65,6 +67,8 @@ export default function App() {
           <Stack direction="row" spacing={0.4} sx={{ ml: 2 }}>
             <NavItem to="/" label="项目" />
             <NavItem to="/series" label="连续剧" />
+            <NavItem to="/assets" label="素材中心" />
+            <NavItem to="/settings" label="系统设置" />
           </Stack>
 
           <Box sx={{ flex: 1 }} />
@@ -109,6 +113,8 @@ export default function App() {
           <Route path="/projects/:projectId" element={<ProjectDetail />} />
           <Route path="/series" element={<SeriesList />} />
           <Route path="/series/:seriesId" element={<SeriesDetail />} />
+          <Route path="/assets" element={<AssetCenter />} />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
       </Box>
     </Box>

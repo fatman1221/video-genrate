@@ -12,13 +12,16 @@ import react from '@vitejs/plugin-react'
  *    Vite 重新预构建，进而撞上批量删除保护、把 dev server 直接杀掉。
  */
 const MUI_ICONS = [
-  'Add', 'Approval', 'ApprovalOutlined', 'ArrowBack', 'AutoAwesome', 'AutoAwesomeMotion',
-  'Block', 'Check', 'CheckCircle', 'Close', 'ContentCut', 'DeleteOutline', 'Description',
-  'Error', 'ErrorOutline', 'FaceRetouchingNatural', 'FactCheck', 'GraphicEq', 'Image',
+  'Add', 'Approval', 'ApprovalOutlined', 'ArrowBack', 'AudiotrackOutlined', 'AutoAwesome',
+  'AutoAwesomeMotion', 'Block', 'Check', 'CheckCircle', 'Close', 'CloudOutlined',
+  'CollectionsOutlined', 'ContentCut', 'DeleteOutline', 'Description',
+  'Error', 'ErrorOutline', 'FaceOutlined', 'FaceRetouchingNatural', 'FactCheck', 'GraphicEq',
+  'Image', 'InfoOutlined', 'LandscapeOutlined', 'MemoryOutlined',
   'MenuBookOutlined', 'MicNone', 'Movie', 'MovieCreation', 'MovieFilter',
   'MovieFilterOutlined', 'MusicNote', 'PersonOutline', 'PlayArrow', 'PlayCircleOutline',
-  'PriorityHigh', 'Refresh', 'Replay', 'RestartAlt', 'RocketLaunch', 'SmartToy',
-  'SubscriptionsOutlined', 'Subtitles', 'TerminalOutlined', 'Undo', 'Verified', 'ViewQuilt',
+  'PriorityHigh', 'Refresh', 'Replay', 'RestartAlt', 'RocketLaunch', 'SaveOutlined',
+  'SmartToy', 'SubscriptionsOutlined', 'Subtitles', 'TerminalOutlined', 'TuneOutlined',
+  'Undo', 'Verified', 'ViewQuilt',
 ].map((n) => `@mui/icons-material/${n}`)
 
 export default defineConfig({

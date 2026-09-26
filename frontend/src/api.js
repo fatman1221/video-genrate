@@ -40,7 +40,23 @@ export const SKILL = {
   createEpisode: (p) => invokeAsHuman('create_episode', p),
   promoteCharacter: (p) => invokeAsHuman('promote_character_to_series', p),
   deleteSeries: (p) => invokeAsHuman('delete_series', p),
+  // 素材中心 / 系统设置
+  generateStandaloneVoice: (p) => invokeAsHuman('generate_standalone_voice', p),
+  setDefaultProvider: (p) => invokeAsHuman('set_default_provider', p),
 }
+
+// ---- 素材中心 ----
+/** 跨项目聚合；project_id 留空即全部项目，unassigned=true 只看独立素材。 */
+export const getAssetCenter = (params) => get('/api/assets', params)
+/** 独立合成语音并入库（本地 TTS 通常几秒，云端可能较慢，故放宽超时）。 */
+export const generateVoiceAsset = (body) =>
+  client.post('/api/assets/generate/voice', body, { timeout: 300000 }).then((r) => r.data)
+
+// ---- 系统设置（生图 / 图生视频 / 语音生成 三类模型）----
+export const getProviderSettings = () => get('/api/settings/providers')
+export const patchProviderSetting = (body) =>
+  client.patch('/api/settings/providers', body).then((r) => r.data)
+export const getTtsVoices = () => get('/api/settings/voices')
 
 // ---- 连续剧（Series）----
 export const getSeriesList = (params) => get('/api/series', params)

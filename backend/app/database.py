@@ -94,9 +94,13 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("characters", "series_id", "VARCHAR(40) NULL"),
 )
 
-#: 需要解除 NOT NULL 的列：系列级角色不挂在具体某一集上，project_id 必须可空。
+#: 需要解除 NOT NULL 的列。
+#: - 系列级角色不挂在具体某一集上，characters.project_id 必须可空。
+#: - 素材中心里独立生成/保存的素材（如直接合成的语音）不属于任何项目，
+#:   assets.project_id 同样必须可空。
 _DROP_NOT_NULL: tuple[tuple[str, str], ...] = (
     ("characters", "project_id"),
+    ("assets", "project_id"),
 )
 
 #: 已存在表需要补齐的外键（表, 约束名, 列, 引用表, 引用列, 级联动作）

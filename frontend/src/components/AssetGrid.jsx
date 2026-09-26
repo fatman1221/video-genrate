@@ -45,7 +45,7 @@ function Preview({ asset }) {
   )
 }
 
-export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy }) {
+export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, showProject = false }) {
   const [detail, setDetail] = useState(null)
 
   if (!assets.length) {
@@ -99,9 +99,17 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy })
                 )}
               </Box>
               <Box sx={{ p: 1.5, flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <Stack direction="row" spacing={0.6} alignItems="center" sx={{ mb: 0.5 }}>
+                <Stack direction="row" spacing={0.6} alignItems="center" sx={{ mb: 0.5, flexWrap: 'wrap', gap: 0.6 }}>
                   <Chip size="small" label={a.type} color="primary" variant="outlined" />
                   <Chip size="small" label={a.status} color={statusColor(a.status)} />
+                  {showProject && (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={a.project_id ? 'default' : 'secondary'}
+                      label={a.project_id ? a.project_id.slice(-6) : '独立素材'}
+                    />
+                  )}
                 </Stack>
                 <Typography variant="body2" fontWeight={600} noWrap title={a.name}>
                   {a.name}
@@ -119,7 +127,7 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy })
                       <DownloadIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  {a.shot_id && (
+                  {a.shot_id && onRegenerate && (
                     <Tooltip title="重新生成">
                       <span>
                         <IconButton size="small" disabled={busy} onClick={() => onRegenerate(a)}>
@@ -166,6 +174,9 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy })
                     ['时长', fmtDuration(detail.duration)],
                     ['帧率', detail.fps || '—'],
                     ['大小', fmtBytes(detail.size_bytes)],
+                    ...(showProject
+                      ? [['归属项目', detail.project_id || '独立素材（不属于任何项目）']]
+                      : []),
                     ['关联镜头', detail.shot_id || '—'],
                     ['关联角色', detail.character_id || '—'],
                     ['创建时间', fmtTime(detail.created_at)],

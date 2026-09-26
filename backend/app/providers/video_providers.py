@@ -16,6 +16,7 @@ import httpx
 from ..config import settings
 from .base import GenerationResult, ProviderError, VideoProvider, registry
 from . import local_engine as engine
+from . import runtime
 from .image_providers import LocalImageProvider, _http_alive, _substitute
 
 _MOTION_KEYWORDS = (
@@ -101,9 +102,14 @@ class ComfyUIVideoProvider(VideoProvider):
     capabilities = ("image_to_video", "text_to_video", "animatediff", "svd", "wan")
     doc = "提交 ComfyUI 工作流并下载视频输出。需配置 COMFYUI_BASE_URL。"
 
-    def __init__(self) -> None:
-        self.base_url = settings.comfyui_base_url.rstrip("/")
-        self.api_key = settings.comfyui_api_key
+    # 连接信息动态读取：设置页改完即时生效，不需要重启进程
+    @property
+    def base_url(self) -> str:
+        return runtime.resolve("video", "comfyui", "base_url", settings.comfyui_base_url).rstrip("/")
+
+    @property
+    def api_key(self) -> str:
+        return runtime.resolve("video", "comfyui", "api_key", settings.comfyui_api_key)
 
     @property
     def functional(self) -> bool:  # type: ignore[override]
@@ -188,8 +194,20 @@ class CloudVideoProvider(VideoProvider):
     doc = "通用云端适配器：POST 提交任务拿到 job_id，GET 轮询状态并下载视频。"
 
     @property
+    def base_url(self) -> str:
+        return runtime.resolve("video", "cloud", "base_url", settings.cloud_video_base_url).rstrip("/")
+
+    @property
+    def api_key(self) -> str:
+        return runtime.resolve("video", "cloud", "api_key", settings.cloud_video_api_key)
+
+    @property
+    def default_model(self) -> str:
+        return runtime.model_of("video", "cloud")
+
+    @property
     def functional(self) -> bool:  # type: ignore[override]
-        return bool(settings.cloud_video_base_url and settings.cloud_video_api_key)
+        return bool(self.base_url and self.api_key)
 
     def generate(self, *, prompt: str, image_path: str | None = None,
                  width: int = 1280, height: int = 720, duration: float = 5.0,
@@ -198,20 +216,23 @@ class CloudVideoProvider(VideoProvider):
                  progress_cb: Callable[[int, str], None] | None = None) -> GenerationResult:
         if not self.functional:
             raise ProviderError(
-                "云端视频 Provider 未配置（需要 CLOUD_VIDEO_BASE_URL / CLOUD_VIDEO_API_KEY）",
+                "云端视频 Provider 未配置（请在『系统设置』里填写 Base URL 与 API Key，"
+                "或设置 CLOUD_VIDEO_BASE_URL / CLOUD_VIDEO_API_KEY 环境变量）",
                 retryable=False,
             )
         started = time.time()
         params = dict(parameters or {})
-        base = settings.cloud_video_base_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {settings.cloud_video_api_key}"}
+        base = self.base_url
+        headers = {"Authorization": f"Bearer {self.api_key}"}
         submit_path = params.get("submit_path", "/generate")
         status_path = params.get("status_path", "/status/{job_id}")
+        model = params.get("model") or self.default_model
 
         with httpx.Client(timeout=60) as client:
             resp = client.post(base + submit_path, headers=headers, json={
                 "prompt": prompt, "image": image_path, "width": width,
                 "height": height, "duration": duration, "fps": fps, "seed": seed,
+                **({"model": model} if model else {}),
                 **params.get("extra", {}),
             })
             resp.raise_for_status()
@@ -247,7 +268,8 @@ class CloudVideoProvider(VideoProvider):
         info = engine.ffprobe(out)
         return GenerationResult(
             file_path=str(out), provider=self.name,
-            model=params.get("model", "cloud-video"), workflow="cloud_video_generation",
+            model=params.get("model") or self.default_model or "cloud-video",
+            workflow="cloud_video_generation",
             parameters=params, width=info["width"] or width, height=info["height"] or height,
             duration=info["duration"] or duration, fps=info["fps"] or fps,
             format="mp4", size_bytes=info["size_bytes"], prompt=prompt, seed=seed,

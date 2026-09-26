@@ -18,6 +18,7 @@ from .base import (
     GenerationResult, MusicProvider, ProviderError, SFXProvider, TTSProvider, registry,
 )
 from . import local_engine as engine
+from . import runtime
 
 
 class LocalTTSProvider(TTSProvider):
@@ -57,14 +58,27 @@ class CloudTTSProvider(TTSProvider):
     doc = "POST {CLOUD_TTS_BASE_URL} 提交 {text,voice,rate}，可直接返回音频字节或 {url}。"
 
     @property
+    def base_url(self) -> str:
+        return runtime.resolve("tts", "cloud", "base_url", settings.cloud_tts_base_url)
+
+    @property
+    def api_key(self) -> str:
+        return runtime.resolve("tts", "cloud", "api_key", settings.cloud_tts_api_key)
+
+    @property
+    def default_model(self) -> str:
+        return runtime.model_of("tts", "cloud")
+
+    @property
     def functional(self) -> bool:  # type: ignore[override]
-        return bool(settings.cloud_tts_base_url and settings.cloud_tts_api_key)
+        return bool(self.base_url and self.api_key)
 
     def synthesize(self, *, text: str, voice: str = "", rate: int = 0,
                    parameters: dict[str, Any] | None = None) -> GenerationResult:
         if not self.functional:
             raise ProviderError(
-                "云端 TTS Provider 未配置（需要 CLOUD_TTS_BASE_URL / CLOUD_TTS_API_KEY）",
+                "云端 TTS Provider 未配置（请在『系统设置』里填写 Base URL 与 API Key，"
+                "或设置 CLOUD_TTS_BASE_URL / CLOUD_TTS_API_KEY 环境变量）",
                 retryable=False,
             )
         started = time.time()
@@ -72,12 +86,15 @@ class CloudTTSProvider(TTSProvider):
         workdir = Path(params.get("workdir") or tempfile.mkdtemp(prefix="cloud_tts_"))
         workdir.mkdir(parents=True, exist_ok=True)
         out = workdir / "cloud_voice.mp3"
+        model = params.get("model") or self.default_model
         with httpx.Client(timeout=float(params.get("timeout", 300))) as client:
             resp = client.post(
-                settings.cloud_tts_base_url,
-                headers={"Authorization": f"Bearer {settings.cloud_tts_api_key}"},
+                self.base_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
                 json={"text": text, "voice": voice or params.get("voice", ""),
-                      "rate": rate or params.get("rate", 0), **params.get("extra", {})},
+                      "rate": rate or params.get("rate", 0),
+                      **({"model": model} if model else {}),
+                      **params.get("extra", {})},
             )
             resp.raise_for_status()
             ctype = resp.headers.get("content-type", "")
@@ -91,7 +108,8 @@ class CloudTTSProvider(TTSProvider):
                 out.write_bytes(resp.content)
         info = engine.ffprobe(out)
         return GenerationResult(
-            file_path=str(out), provider=self.name, model=params.get("model", "cloud-tts"),
+            file_path=str(out), provider=self.name,
+            model=params.get("model") or self.default_model or "cloud-tts",
             workflow="cloud_tts", parameters=params, duration=info["duration"],
             format="mp3", size_bytes=info["size_bytes"], prompt=text,
             elapsed_ms=int((time.time() - started) * 1000),
@@ -156,7 +174,8 @@ class CloudMusicProvider(MusicProvider):
 
     @property
     def functional(self) -> bool:  # type: ignore[override]
-        return bool(settings.cloud_video_base_url and settings.cloud_video_api_key)
+        # 修正：原实现引用了 cloud_video_* 配置（与音乐无关），且该 provider 尚未接线
+        return bool(runtime.resolve("music", "cloud", "base_url", ""))
 
     def generate_music(self, *, prompt: str = "", duration: float = 30.0,
                        mood: str = "calm",

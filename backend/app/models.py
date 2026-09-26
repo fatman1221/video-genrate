@@ -275,7 +275,11 @@ class Asset(Base, TimestampMixin):
     __tablename__ = "assets"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ast"))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    #: 可为空 —— 素材中心里独立生成/保存的素材（如直接合成的语音）不挂在任何项目下。
+    #: 允许为空的语义与 characters.series_id 一致：先在建表/迁移层放开，业务层再决定归属。
+    project_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     scene_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     shot_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     character_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
@@ -307,7 +311,7 @@ class Asset(Base, TimestampMixin):
     task_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
-    project: Mapped[Project] = relationship(back_populates="assets")
+    project: Mapped[Optional[Project]] = relationship(back_populates="assets")
 
     __table_args__ = (Index("ix_assets_project_type", "project_id", "type"),)
 

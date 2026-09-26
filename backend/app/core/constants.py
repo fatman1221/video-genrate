@@ -312,3 +312,32 @@ STAGE_REVIEWABLE: Final = (
     "script", "storyboard", "character", "image", "video",
     "voice", "music", "subtitle", "composing",
 )
+
+
+class ModelSettingKind:
+    """系统设置里对用户可见的三类「模型」。
+
+    每类映射到一个 Provider kind，用户在其中选择引擎（本地 / ComfyUI / 云端）。
+    """
+
+    IMAGE: Final = "image"
+    VIDEO: Final = "video"
+    TTS: Final = "tts"
+
+    ALL: Final = (IMAGE, VIDEO, TTS)
+
+
+#: 已保存凭证的回显掩码：设置页只暴露后 4 位，绝不把密钥原样返回浏览器
+PUBLIC_MASK: Final = "•"
+
+
+class AssetGroup:
+    """素材中心的分类（用户视角），一个分类可对应多个 AssetType。"""
+
+    CHARACTER: Final = "character"
+    SCENE: Final = "scene"
+    AUDIO: Final = "audio"
+    IMAGE: Final = "image"
+    VIDEO: Final = "video"
+
+    ALL: Final = (CHARACTER, SCENE, AUDIO, IMAGE, VIDEO)

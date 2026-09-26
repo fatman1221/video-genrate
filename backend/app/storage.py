@@ -140,9 +140,14 @@ def get_storage() -> StorageBackend:
     return _storage
 
 
-def type_dir(asset_type: str, project_id: str) -> str:
+#: 不属于任何项目的素材（素材中心里独立生成/保存）统一落在该子目录下，
+#: 与真实 project_id 天然隔离，不会被 purge_project 的整目录清理误伤。
+LIBRARY_DIR = "_library"
+
+
+def type_dir(asset_type: str, project_id: str | None) -> str:
     sub = TYPE_DIRS.get(asset_type, "temp")
-    return f"{sub}/{project_id}"
+    return f"{sub}/{project_id or LIBRARY_DIR}"
 
 
 def checksum_of(path: str | Path, limit: int = 1 << 20) -> str:

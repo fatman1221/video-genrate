@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..core.constants import AssetStatus, AssetType
+from ..core.constants import AssetGroup, AssetStatus, AssetType
 from ..models import Asset
 from ..providers.base import GenerationResult
 from ..storage import (
@@ -32,7 +32,7 @@ _EXT_BY_FORMAT = {
 def ingest_result(
     db: Session,
     *,
-    project_id: str,
+    project_id: str | None,
     result: GenerationResult,
     asset_type: str,
     name: str = "",
@@ -105,15 +105,27 @@ def get_asset(db: Session, asset_id: str) -> Asset | None:
 
 def list_assets(
     db: Session, *, project_id: str | None = None, asset_type: str | None = None,
+    asset_types: Sequence[str] | None = None,
     shot_id: str | None = None, scene_id: str | None = None,
     status: str | None = None, keyword: str | None = None,
+    unassigned: bool = False,
     limit: int = 200, offset: int = 0,
 ) -> list[Asset]:
+    """列出素材。
+
+    - ``project_id`` 省略 = 跨项目聚合（素材中心用）
+    - ``unassigned=True`` = 只看不属于任何项目的独立素材
+    - ``asset_types`` 用于一次查多个类型（如音频分区的 VOICE/MUSIC/SFX）
+    """
     stmt = select(Asset).order_by(Asset.created_at.desc())
-    if project_id:
+    if unassigned:
+        stmt = stmt.where(Asset.project_id.is_(None))
+    elif project_id:
         stmt = stmt.where(Asset.project_id == project_id)
     if asset_type:
         stmt = stmt.where(Asset.type == asset_type)
+    if asset_types:
+        stmt = stmt.where(Asset.type.in_(list(asset_types)))
     if shot_id:
         stmt = stmt.where(Asset.shot_id == shot_id)
     if scene_id:
@@ -124,6 +136,47 @@ def list_assets(
         like = f"%{keyword}%"
         stmt = stmt.where(Asset.name.ilike(like) | Asset.prompt.ilike(like))
     return list(db.execute(stmt.offset(offset).limit(limit)).scalars())
+
+
+#: 素材中心的分类 —— 用户视角的分类，与数据库的 AssetType 是「多对一」关系。
+ASSET_GROUPS: dict[str, tuple[str, ...]] = {
+    AssetGroup.CHARACTER: (AssetType.CHARACTER,),
+    AssetGroup.SCENE: (AssetType.SCENE,),
+    AssetGroup.AUDIO: (AssetType.VOICE, AssetType.MUSIC, AssetType.SFX),
+    AssetGroup.IMAGE: (AssetType.IMAGE,),
+    AssetGroup.VIDEO: (AssetType.VIDEO,),
+}
+
+
+def types_of_group(group: str) -> tuple[str, ...] | None:
+    """分类名 → AssetType 元组；未知分类返回 None（表示不过滤）。"""
+    return ASSET_GROUPS.get((group or "").strip().lower())
+
+
+def center_stats(db: Session, *, project_id: str | None = None,
+                 unassigned: bool = False) -> dict[str, Any]:
+    """素材中心各分区的数量与体积（一次聚合，避免前端分多次请求）。"""
+    stmt = select(Asset.type, func.count(Asset.id), func.coalesce(func.sum(Asset.size_bytes), 0))
+    if unassigned:
+        stmt = stmt.where(Asset.project_id.is_(None))
+    elif project_id:
+        stmt = stmt.where(Asset.project_id == project_id)
+    rows = db.execute(stmt.group_by(Asset.type)).all()
+    by_type = {r[0]: {"count": int(r[1]), "size_bytes": int(r[2] or 0)} for r in rows}
+
+    groups: dict[str, Any] = {}
+    for group, types in ASSET_GROUPS.items():
+        items = [by_type.get(t) for t in types]
+        groups[group] = {
+            "count": sum(i["count"] for i in items if i),
+            "size_bytes": sum(i["size_bytes"] for i in items if i),
+        }
+    total = sum(v["count"] for v in by_type.values())
+    total_size = sum(v["size_bytes"] for v in by_type.values())
+    return {
+        "total": total, "total_size_bytes": total_size,
+        "groups": groups, "by_type": by_type,
+    }
 
 
 def asset_stats(db: Session, project_id: str) -> dict[str, Any]:

@@ -20,8 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from .config import settings
 from .database import init_db, session_scope
 from .executors import load_handlers, maintenance, runner
-from .providers import register_all, sync_providers_table
-from .routers import assets, content, projects, series, skills, system, tasks
+from .providers import register_all, reload_from_db, snapshot, sync_providers_table
+from .routers import assets, content, projects, series, settings as settings_router, skills, system, tasks
 from .skills import registry as skill_registry
 
 logging.basicConfig(
@@ -41,8 +41,13 @@ async def lifespan(app: FastAPI):
     handlers = load_handlers()
     with session_scope() as db:
         count = sync_providers_table(db)
+        # 恢复用户在「系统设置」里保存的选择（默认引擎 / 模型名 / 云端凭证）。
+        # 必须在 worker 启动前完成，否则首个任务会拿到代码默认值。
+        restored = reload_from_db(db)
         result = maintenance(db)
-    logger.info("Provider 已同步 %s 个；任务处理器 %s 个：%s", count, len(handlers), ", ".join(handlers))
+    logger.info("Provider 已同步 %s 个，运行时配置恢复 %s 条，当前默认：%s",
+                count, restored, snapshot().get("defaults"))
+    logger.info("任务处理器 %s 个：%s", len(handlers), ", ".join(handlers))
     logger.info("启动维护：%s", result)
     logger.info("Skill 已注册 %s 个，分类：%s", len(skill_registry.list()),
                 ", ".join(f"{k}={v}" for k, v in skill_registry.categories().items()))
@@ -82,6 +87,7 @@ app.include_router(projects.router)
 app.include_router(series.router)
 app.include_router(content.router)
 app.include_router(assets.router)
+app.include_router(settings_router.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
 
