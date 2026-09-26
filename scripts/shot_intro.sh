@@ -16,9 +16,22 @@ SRC="$ROOT/intro.html"
 SCALE="${1:-1.5}"
 OUT="${2:-$ROOT/intro-full.png}"
 
-# 用到 Pillow 打印尺寸，优先用装好依赖的隔离环境
-PY=/Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/python
-[ -x "$PY" ] || PY=python3
+# 用到 Pillow 打印尺寸，按可用性逐级探测（与 dev.sh 同一套顺序）：
+#   $PY  >  项目内 .venv  >  已有托管环境  >  PATH 上的 python3
+detect_python() {
+  if [ -n "${PY:-}" ]; then printf '%s' "$PY"; return; fi
+  local c
+  for c in "$ROOT/.venv/bin/python" "$ROOT/backend/.venv/bin/python" \
+           /Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/python; do
+    [ -x "$c" ] && { printf '%s' "$c"; return; }
+  done
+  command -v python3
+}
+PY="$(detect_python)"
+if ! "$PY" -c "import PIL" >/dev/null 2>&1; then
+  echo "提示：当前 Python 缺少 Pillow（$PY），无法打印图片尺寸。" >&2
+  echo "      装一下：$PY -m pip install Pillow" >&2
+fi
 
 # 页面按 1280 设计；视口 = 1280 * SCALE，zoom 抵消回 1280
 BASE_W=1280
