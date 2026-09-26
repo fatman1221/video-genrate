@@ -1,0 +1,61 @@
+# =========================================================================== #
+# AI Video Agent 工作台 —— 本地 PostgreSQL
+#
+# 用途：让本工程自带数据库依赖，不再借用其他项目的 Postgres 实例。
+#
+# --------------------------------------------------------------------------- #
+# ⚠️ 使用前必读：Compose 的项目名机制（本机踩过一次坑）
+#
+#   `docker compose` 默认把「所在目录名」当作 compose 项目名。
+#   项目名相同的两条命令会互相接管容器 —— 曾经因为在名为 deploy/ 的目录里
+#   执行 up，把另一个项目（同名 compose 项目 deploy）的 postgres 容器
+#   当成自己的服务重建了。
+#
+#   两个防御措施，本项目都做了：
+#     1. 目录名取 `local-postgres`（唯一、不像通用名），项目名派生为
+#        local-postgres，天然与别的项目隔离。请勿把本文件挪进 deploy/ 等通用名目录。
+#     2. 命令里显式加 -p，把项目名钉死（本机 compose 为 v2.2.3，
+#        尚不支持 compose 文件里的顶层 `name:` 字段，故用命令行参数）：
+#            docker compose -p video-agent-studio up -d
+#        两种写法项目名不同，请固定用其中一种，不要混用。
+# --------------------------------------------------------------------------- #
+#
+# 启动：
+#   cd local-postgres && docker compose up -d
+# 停止（保留数据）：
+#   cd local-postgres && docker compose down
+# 彻底清库（⚠️ 会删掉所有项目数据）：
+#   cd local-postgres && docker compose down -v
+#
+# 连接串（与 backend/app/config.py 的默认值保持一致）：
+#   postgresql+psycopg://trade_app:change-me@127.0.0.1:5432/video_agent_studio
+#
+# 说明：
+#   - 用户名 / 密码 / 库名必须与 config.py 默认值一致，
+#     否则需要在 backend/.env 里用 DATABASE_URL 覆盖。
+#   - 端口默认 5432；若已被占用（例如本机还有别的 Postgres），
+#     用 POSTGRES_PORT=5433 覆盖启动，同时改 backend/.env 里的 DATABASE_URL 端口。
+# =========================================================================== #
+services:
+  postgres:
+    image: postgres:17
+    container_name: video-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trade_app
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: video_agent_studio
+      # 中文内容较多，统一 UTF-8 与确定性排序，避免跨机排序结果不一致
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - video_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trade_app -d video_agent_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  video_agent_pgdata:
