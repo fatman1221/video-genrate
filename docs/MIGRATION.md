@@ -17,8 +17,16 @@
 > `.DS_Store`、`node_modules/`、`dist/`、`__pycache__/`、`.vite/`、`backend/storage/`
 > 都已在 `.gitignore` 中排除 —— 它们要么能重新生成，要么依赖本机环境。
 
-**`migration/` 目录不在 Git 里**（属数据不属源码）。如果只通过 Git 传输，
-数据库和素材不会跟着走，需要在旧机重新导出、或直接拷这个目录。
+**`migration/` 目录不在 Git 里**（属数据不属源码），里面放着三样东西：
+
+| 文件 | 大小 | 说明 |
+|---|---|---|
+| `db_dump.sql` | 234 KB | 数据库全量导出（结构 + 数据），`pg_dump` 生成 |
+| `storage.tar.gz` | 246 KB | `backend/storage/` 运行时素材 |
+| `video-skill.bundle` | 4.8 MB | 完整 Git 仓库快照（离线迁移用，见方式 B） |
+
+如果只通过 Git 传输，数据库和素材不会跟着走 —— 要么在新机重新生成，
+要么把 `migration/` 一起拷过去（推荐，拷完按下面的步骤恢复即可）。
 
 ---
 
@@ -36,18 +44,23 @@ git push -u origin main
 
 ### 方式 B：离线单文件 bundle（无网 / 不想建远程仓库）
 
-```bash
-cd <工程目录>
-git bundle create ../video-skill.bundle --all
-```
-
-新机：
+工程里已经预生成了一个现成的 bundle：**`migration/video-skill.bundle`**（含完整历史）。
+连同 `migration/` 一起拷到新机，然后：
 
 ```bash
-git clone video-skill.bundle video-skill
+git clone migration/video-skill.bundle video-skill
 cd video-skill
 git remote set-url origin <将来要推的仓库地址>   # 可选
 ```
+
+> ⚠️ 这个 bundle 是**快照**，在它生成之后新提交的内容不在里面。
+> 每有新提交、准备迁移前，重新生成一次：
+>
+> ```bash
+> cd <工程目录>
+> git bundle create migration/video-skill.bundle --all
+> git bundle verify migration/video-skill.bundle    # 校验
+> ```
 
 bundle 是单个文件，含完整提交历史，可直接拷 U 盘 / 网盘。
 
