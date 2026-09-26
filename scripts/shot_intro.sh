@@ -22,7 +22,7 @@ detect_python() {
   if [ -n "${PY:-}" ]; then printf '%s' "$PY"; return; fi
   local c
   for c in "$ROOT/.venv/bin/python" "$ROOT/backend/.venv/bin/python" \
-           /Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/python; do
+           "$HOME/.workbuddy/binaries/python/envs/default/bin/python"; do
     [ -x "$c" ] && { printf '%s' "$c"; return; }
   done
   command -v python3

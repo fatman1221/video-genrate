@@ -1,12 +1,14 @@
 """探测 zoompan 各运镜模式的耗时/是否卡死（开发诊断用）。"""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-FF = "/Users/zhangdongke/.local/bin/ffmpeg"
+# ffmpeg 逐级探测：PATH > ~/.local/bin（本机静态安装位置）
+FF = shutil.which("ffmpeg") or str(Path.home() / ".local" / "bin" / "ffmpeg")
 IMG = sys.argv[1] if len(sys.argv) > 1 else None
 LIMIT = float(sys.argv[2]) if len(sys.argv) > 2 else 25.0
 

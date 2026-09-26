@@ -42,8 +42,8 @@ detect_python() {
   for c in "$ROOT/.venv/bin/python" "$ROOT/backend/.venv/bin/python"; do
     [ -x "$c" ] && { printf '%s' "$c"; return; }
   done
-  # 本机此前使用的托管运行时（换机后不存在，自动跳过）
-  for c in /Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/python; do
+  # WorkBuddy 托管运行时（不存在则自动跳过，换机无影响）
+  for c in "$HOME/.workbuddy/binaries/python/envs/default/bin/python"; do
     [ -x "$c" ] && { printf '%s' "$c"; return; }
   done
   command -v python3 2>/dev/null || true
@@ -53,7 +53,7 @@ detect_python() {
 detect_node_dir() {
   if [ -n "${NODE_BIN_DIR:-}" ]; then printf '%s' "$NODE_BIN_DIR"; return; fi
   local c
-  for c in /Users/zhangdongke/.workbuddy/binaries/node/versions/22.22.2-3/bin; do
+  for c in "$HOME/.workbuddy/binaries/node/versions/22.22.2-3/bin"; do
     [ -x "$c/node" ] && { printf '%s' "$c"; return; }
   done
   if command -v node >/dev/null 2>&1; then
@@ -92,7 +92,7 @@ preflight() {
     echo "✗ 找不到 Node 运行时（需要 Node 18+）。" >&2
     warn=1
   fi
-  if ! command -v ffmpeg >/dev/null 2>&1 && [ ! -x /Users/zhangdongke/.local/bin/ffmpeg ]; then
+  if ! command -v ffmpeg >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/ffmpeg" ]; then
     echo "! 未检测到 ffmpeg —— 视频合成相关任务会失败（图像/脚本仍可用）。" >&2
     echo "  安装方式见 docs/MIGRATION.md" >&2
   fi
