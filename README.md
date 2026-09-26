@@ -27,6 +27,10 @@ WorkBuddy / Codex   ──思考、规划、决策、调用 Skill──►  本�
 > 一集即一个 Project，因此每集的节点回退 / 审核 / 重生成 / 成片全部复用现成能力；
 > 角色建在系列层可**跨集复用**，保证主角不换集换脸。详见
 > [docs/SERIES.md](docs/SERIES.md)。
+>
+> **换台电脑继续用**：见 [docs/MIGRATION.md](docs/MIGRATION.md) —— 传输方式、
+> 新机部署步骤、验收清单与故障速查。本工程自带 `local-postgres/docker-compose.yml`，
+> 不依赖任何外部 Postgres 实例。
 
 核心原则（与需求一一对应）：
 
@@ -90,43 +94,78 @@ video-skill/
 │   └── dev.sh                      一键启动后端 + 前端
 ├── intro.html                      ★ 项目介绍页（单文件、零外部依赖、紫主题）
 ├── intro-full.png                  介绍页整页长截图（1920×9142）
-└── docs/                           架构 / 验证 / 节点流水线 / 连续剧分层
+├── local-postgres/
+│   └── docker-compose.yml          自带 PostgreSQL（不依赖外部实例）
+└── docs/
+    ├── ARCHITECTURE.md             架构与扩展指南
+    ├── VERIFICATION.md             验收记录
+    ├── PIPELINE_NODES.md           节点流水线设计
+    ├── SERIES.md                   连续剧分层结构
+    └── MIGRATION.md                ★ 换台电脑继续使用
 ```
+
+> `backend/storage/`（生成的图片 / 视频 / 音频 / 字幕）不入库，
+> 数据库只存 `file_path`。换机时用 `migration/storage.tar.gz` 单独搬运，
+> 见 [docs/MIGRATION.md](docs/MIGRATION.md)。
 
 ---
 
 ## 二、快速开始
 
-### 1. 启动后端
+### 0. 一键启动（推荐）
 
 ```bash
-cd backend
-# 依赖（首次）
-/Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/pip install -r requirements.txt
-
-# 启动（注意 env -u PYTHONPATH，规避本机 WorkBuddy shim 对 os.mkdir 的劫持）
-env -u PYTHONPATH /Users/zhangdongke/.workbuddy/binaries/python/envs/default/bin/python \
-  -m uvicorn app.main:app --host 127.0.0.1 --port 8077
+./scripts/dev.sh check     # 环境自检：Python / Node / ffmpeg / 前端依赖
+./scripts/dev.sh           # 启动后端 8077 + 前端 5180
+./scripts/dev.sh stop      # 停止
 ```
 
-默认连接 PostgreSQL（`video_agent_studio`）。若要零依赖运行，设环境变量：
+脚本会自动探测运行环境（项目内 `.venv` > 已有环境 > PATH），
+并规避本机 WorkBuddy 宿主注入的两个 shim。首次使用前需先装依赖，见下。
+
+### 1. 数据库
+
+```bash
+cd local-postgres && docker compose up -d && cd ..
+```
+
+连接串 `postgresql+psycopg://trade_app:change-me@127.0.0.1:5432/video_agent_studio`
+（与 `backend/app/config.py` 默认值一致）。
+
+零依赖方案（SQLite，不跑 Docker）：
 
 ```bash
 export DATABASE_URL="sqlite:///./video_agent_studio.db"
 ```
 
-### 2. 启动前端
+### 2. 后端依赖与启动
 
 ```bash
-cd frontend
-/Users/zhangdongke/.workbuddy/binaries/node/versions/22.22.2-3/bin/npm run dev
+python3 -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt
+
+# 手工启动（dev.sh 会自动做这些）
+cd backend
+env -u PYTHONPATH ../../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077
+```
+
+> `env -u PYTHONPATH` 是为了规避 WorkBuddy 宿主 shim 对 `os.mkdir` 的劫持；
+> 在你自己的普通终端里该变量不存在，去掉也无妨。
+
+### 3. 前端依赖与启动
+
+```bash
+cd frontend && npm install && cd ..
+
+# 手工启动（dev.sh 会自动做这些）
+cd frontend && env -u NODE_OPTIONS ./node_modules/.bin/vite --host 127.0.0.1 --port 5180
 # http://127.0.0.1:5180
 ```
 
-### 3. 一句话验证整条链路
+### 4. 一句话验证整条链路
 
 ```bash
-env -u PYTHONPATH python scripts/e2e_check.py 20 5   # 20 秒成片 / 单镜头 5 秒
+python scripts/e2e_check.py 20 5   # 20 秒成片 / 单镜头 5 秒
 ```
 
 ---
