@@ -319,9 +319,9 @@ export default function ProjectDetail() {
     <Box>
       {/* ------------------------------ 顶部 ------------------------------ */}
       <Stack direction="row" alignItems="center" spacing={1.5} sx={{ mb: 2 }}>
-        <Tooltip title={project.series_id ? '返回所属连续剧' : '返回项目列表'}>
+        <Tooltip title={project.series_id ? '返回所属连续剧' : '返回单集列表'}>
           <IconButton
-            onClick={() => navigate(project.series_id ? `/series/${project.series_id}` : '/')}
+            onClick={() => navigate(project.series_id ? `/series/${project.series_id}` : '/projects')}
             size="small"
             sx={{ bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider' }}
           >

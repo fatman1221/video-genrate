@@ -4,22 +4,26 @@ import TerminalOutlinedIcon from '@mui/icons-material/TerminalOutlined'
 import MenuBookOutlinedIcon from '@mui/icons-material/MenuBookOutlined'
 import Brightness4Icon from '@mui/icons-material/Brightness4'
 import Brightness7Icon from '@mui/icons-material/Brightness7'
-import { Link as RouterLink, NavLink, Route, Routes } from 'react-router-dom'
-import ProjectList from './pages/ProjectList'
+import { Link as RouterLink, Route, Routes, useLocation } from 'react-router-dom'
+import Workspace from './pages/Workspace'
 import ProjectDetail from './pages/ProjectDetail'
-import SeriesList from './pages/SeriesList'
 import SeriesDetail from './pages/SeriesDetail'
 import AssetCenter from './pages/AssetCenter'
 import Settings from './pages/Settings'
 import { useThemeMode } from './ThemeModeProvider'
 import { useApi } from './api'
 
-function NavItem({ to, label }) {
+// match：额外视为「当前项」的路径前缀。工作台一个入口下挂了 /、/projects、/series 三组路由，
+// 详情页（/projects/:id、/series/:id）也归它高亮。
+function NavItem({ to, label, match = [] }) {
+  const { pathname } = useLocation()
+  const active = [to, ...match].some((p) =>
+    p === '/' ? pathname === '/' : pathname === p || pathname.startsWith(`${p}/`),
+  )
   return (
     <Box
-      component={NavLink}
+      component={RouterLink}
       to={to}
-      end
       sx={{
         px: 1.4,
         py: 0.6,
@@ -27,9 +31,9 @@ function NavItem({ to, label }) {
         fontSize: 13.5,
         fontWeight: 600,
         textDecoration: 'none',
-        color: 'text.secondary',
+        color: active ? 'primary.main' : 'text.secondary',
+        bgcolor: active ? 'action.selected' : 'transparent',
         transition: 'all .15s',
-        '&.active': { color: 'primary.main', bgcolor: 'action.selected' },
         '&:hover': { color: 'text.primary' },
       }}
     >
@@ -69,9 +73,8 @@ export default function App() {
           </Typography>
 
           <Stack direction="row" spacing={0.4} sx={{ ml: 2 }}>
-            <NavItem to="/" label="项目" />
-            <NavItem to="/series" label="连续剧" />
-            <NavItem to="/assets" label="素材中心" />
+            <NavItem to="/" label="工作台" match={['/projects', '/series']} />
+            <NavItem to="/assets" label="资产库" />
             <NavItem to="/settings" label="系统设置" />
           </Stack>
 
@@ -118,9 +121,11 @@ export default function App() {
 
       <Box sx={{ maxWidth: 1500, mx: 'auto', px: { xs: 2, md: 3 }, py: 3 }}>
         <Routes>
-          <Route path="/" element={<ProjectList />} />
+          {/* 工作台：连续剧（/）与单集（/projects）两种视图；/series 保留兼容旧链接 */}
+          <Route path="/" element={<Workspace view="series" />} />
+          <Route path="/projects" element={<Workspace view="project" />} />
+          <Route path="/series" element={<Workspace view="series" />} />
           <Route path="/projects/:projectId" element={<ProjectDetail />} />
-          <Route path="/series" element={<SeriesList />} />
           <Route path="/series/:seriesId" element={<SeriesDetail />} />
           <Route path="/assets" element={<AssetCenter />} />
           <Route path="/settings" element={<Settings />} />

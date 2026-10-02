@@ -99,7 +99,7 @@ video-skill/
 │   ├── agent_cli.py                ★ 给 Agent 用的 CLI
 │   └── requirements.txt
 ├── frontend/                       React 18 + Vite + MUI（紫色主题）
-│   └── src/{pages,components}      项目列表 / 项目详情 / 连续剧 / 素材中心 / 系统设置
+│   └── src/{pages,components}      工作台(连续剧/单集) / 项目详情 / 连续剧详情 / 资产库 / 系统设置
 ├── scripts/
 │   ├── e2e_check.py                端到端链路验证脚本
 │   ├── gen_images.py               ★ ComfyUI + Qwen-Image 批量出图 CLI
@@ -364,7 +364,7 @@ Web UI 上就是**「系统设置」页**：为「生图模型 / 图生视频模
 
 - 二进制文件**不入库**，只存 `file_path` + `url`
 - `shots` 是核心实体：image/video/voice/subtitle 各自的 `*_asset_id` 与状态独立
-- `assets.project_id` **可为空**：空值表示素材中心里独立生成/保存的素材
+- `assets.project_id` **可为空**：空值表示资产库里独立生成/保存的素材
   （例如直接合成的语音），不属于任何项目，落在 `storage/{类型}/_library/`
 - `tasks` 即任务队列：状态、进度、尝试次数、错误详情、逐条执行日志
 - `series` 是连续剧层：`projects.series_id` + `episode_no` 表示「第几集」，

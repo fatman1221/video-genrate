@@ -323,7 +323,7 @@ export default function StagePanel({
               回退
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.6 }}>
-              回到「{node.label}」这一步重来：该节点与全部下游重置为待执行，已有产物仍保留在素材中心可对比。
+              回到「{node.label}」这一步重来：该节点与全部下游重置为待执行，已有产物仍保留在资产库可对比。
             </Typography>
             <Button
               fullWidth

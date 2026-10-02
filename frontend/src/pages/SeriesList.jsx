@@ -189,18 +189,10 @@ export default function SeriesList() {
 
   return (
     <Box>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'flex-end' }} sx={{ mb: 3 }}>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h3" sx={{ fontSize: 30 }}>
-            连续剧
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.8 }}>
-            一部剧 → 多集 → 每集一条完整流水线 · 角色形象跨集复用
-          </Typography>
-        </Box>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2.5 }}>
         <Stack direction="row" spacing={2.5} alignItems="center">
           {stats.map((s) => (
-            <Box key={s.label} sx={{ textAlign: 'right' }}>
+            <Box key={s.label} sx={{ textAlign: 'left' }}>
               <Typography variant="h6" sx={{ fontSize: 19, lineHeight: 1.2 }}>
                 {s.value}
               </Typography>
@@ -209,10 +201,11 @@ export default function SeriesList() {
               </Typography>
             </Box>
           ))}
-          <Button variant="contained" size="large" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
-            新建连续剧
-          </Button>
         </Stack>
+        <Box sx={{ flex: 1 }} />
+        <Button variant="contained" size="large" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
+          新建连续剧
+        </Button>
       </Stack>
 
       {loading && <LinearProgress sx={{ mb: 2 }} />}

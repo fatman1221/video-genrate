@@ -33,7 +33,7 @@ const GROUPS = [
   { value: 'character', label: '人物图', icon: FaceOutlinedIcon, hint: '角色参考图与人物设定图' },
   { value: 'scene', label: '场景图', icon: LandscapeOutlinedIcon, hint: '场景概念图与背景图' },
   { value: 'audio', label: '音频', icon: AudiotrackOutlinedIcon, hint: '配音 / 配乐 / 音效，可直接合成语音' },
-  { value: 'all', label: '全部', icon: CollectionsOutlinedIcon, hint: '素材中心的全部内容' },
+  { value: 'all', label: '全部', icon: CollectionsOutlinedIcon, hint: '资产库的全部内容' },
 ]
 
 /** 本机 macOS `say` 常用的中文音色，点击即填入。 */
@@ -78,7 +78,7 @@ export default function AssetCenter() {
     <Box>
       <Stack direction="row" alignItems="flex-end" spacing={2} sx={{ mb: 0.5 }}>
         <Typography variant="h5" fontWeight={700}>
-          素材中心
+          资产库
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ pb: 0.4 }}>
           跨项目聚合的人物图 / 场景图 / 音频，可直接合成语音并保存
@@ -234,7 +234,7 @@ function VoiceDialog({ open, onClose, onDone, projects = [] }) {
       <DialogContent dividers>
         <Stack spacing={2} sx={{ pt: 0.5 }}>
           <Typography variant="caption" color="text.secondary">
-            合成结果会直接保存到素材中心的「音频」分区。不选归属项目即为独立素材，不依赖任何项目。
+            合成结果会直接保存到资产库的「音频」分区。不选归属项目即为独立素材，不依赖任何项目。
           </Typography>
 
           <TextField

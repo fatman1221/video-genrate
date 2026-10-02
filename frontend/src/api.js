@@ -41,12 +41,12 @@ export const SKILL = {
   createEpisode: (p) => invokeAsHuman('create_episode', p),
   promoteCharacter: (p) => invokeAsHuman('promote_character_to_series', p),
   deleteSeries: (p) => invokeAsHuman('delete_series', p),
-  // 素材中心 / 系统设置
+  // 资产库 / 系统设置
   generateStandaloneVoice: (p) => invokeAsHuman('generate_standalone_voice', p),
   setDefaultProvider: (p) => invokeAsHuman('set_default_provider', p),
 }
 
-// ---- 素材中心 ----
+// ---- 资产库 ----
 /** 跨项目聚合；project_id 留空即全部项目，unassigned=true 只看独立素材。 */
 export const getAssetCenter = (params) => get('/api/assets', params)
 /** 独立合成语音并入库（本地 TTS 通常几秒，云端可能较慢，故放宽超时）。 */
