@@ -109,14 +109,14 @@
 ## 七、复现步骤
 
 ```bash
-# 1) 后端（注意 env -u PYTHONPATH）
-cd backend && env -u PYTHONPATH <venv>/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077
+# 1) 后端（先摘掉 PYTHONPATH，用 unset 而非 env -u）
+cd backend && unset PYTHONPATH && <venv>/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077
 
 # 2) 前端
 cd frontend && ./node_modules/.bin/vite --host 127.0.0.1 --port 5180
 
 # 3) 一键端到端验收
-env -u PYTHONPATH <venv>/bin/python scripts/e2e_check.py 20 5
+unset PYTHONPATH && <venv>/bin/python scripts/e2e_check.py 20 5
 ```
 
 访问 <http://127.0.0.1:5180>。

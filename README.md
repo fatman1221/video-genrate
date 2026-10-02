@@ -508,10 +508,11 @@ unset PYTHONPATH
 > `unset PYTHONPATH` 是为规避 WorkBuddy 宿主 shim 对 `os.mkdir` 的劫持；
 > 在你自己的普通终端里该变量不存在，这句是空操作、可安全保留。
 >
-> ⚠️ **不要写成 `env -u PYTHONPATH`**。部分机器 PATH 上存在 `~/.local/bin/env`
-> （uv 安装器留下的前插脚本），会遮蔽真正的 `/usr/bin/env`，
-> 导致 `env -u XXX cmd` **静默退出（exit 0）且不执行命令** ——
-> 表现为"后端启动后立刻退出、日志空白"。用 shell 内建的 `unset`。
+> ⚠️ **优先用 `unset` 而不是 `env -u`**。`env -u` 本身没错，但当 PATH 上
+> `~/.local/bin/env`（uv 安装器留下的前插 shim）排在 `/usr/bin/env` 前面时，
+> `env -u XXX cmd` 会变成**空操作** —— 静默退出（exit 0）且什么都不执行，
+> 表现为"启动后立刻退出、日志空白"。`unset` 是 shell 内建，无条件正确。
+> 不确定时先 `type -a env` 看一眼。
 
 ### 3. 前端依赖与启动
 
@@ -525,7 +526,7 @@ unset NODE_OPTIONS
 ```
 
 > `unset NODE_OPTIONS` 是为摘掉宿主注入的 node shim
-> （它的批量删除保护会让 Vite 清缓存时被拦截、dev server 当场退出）。同理不要写 `env -u`。
+> （它的批量删除保护会让 Vite 清缓存时被拦截、dev server 当场退出）。同理优先用 `unset`。
 
 ### 4. 验证
 

@@ -196,8 +196,12 @@ cd frontend && npm install && cd ..
 目录已存在时抛 `PermissionError` 而非 `FileExistsError`，于是 `Path.mkdir(exist_ok=True)` 直接崩。
 
 ```bash
-env -u PYTHONPATH python -m uvicorn app.main:app --port 8077
+unset PYTHONPATH
+python -m uvicorn app.main:app --port 8077
 ```
+
+> 优先用 `unset`（shell 内建，无条件正确）。`env -u` 也能用，但当 PATH 上
+> `~/.local/bin/env` 排在 `/usr/bin/env` 前面时它会**静默失效** —— 见本节末速查表。
 
 诊断：`python -c "import os; print(os.mkdir.__module__)"`，输出 `sitecustomize` 即中招。
 
@@ -208,7 +212,8 @@ env -u PYTHONPATH python -m uvicorn app.main:app --port 8077
 日志里能看到 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`。
 
 ```bash
-env -u NODE_OPTIONS ./node_modules/.bin/vite --host 127.0.0.1 --port 5180 --strictPort
+unset NODE_OPTIONS
+./node_modules/.bin/vite --host 127.0.0.1 --port 5180 --strictPort
 ```
 
 另外：`vite.config.js` 里维护了 MUI 图标的预构建白名单（`MUI_ICONS`），
@@ -251,9 +256,9 @@ python3 scripts/e2e_check.py 20 5
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 后端启动报 `EEXIST` / `PermissionError` | PYTHONPATH shim | `unset PYTHONPATH`（**别用 `env -u`**，见下行） |
-| Vite 秒退，日志有 `SAFE_DELETE` | NODE_OPTIONS shim | `unset NODE_OPTIONS`（**别用 `env -u`**） |
-| **命令 exit 0 但毫无输出、进程 0.3 秒就退出** | PATH 上的 `~/.local/bin/env` shim 遮蔽了真 `/usr/bin/env`，`env -u X cmd` 变成空操作 | 弃用 `env -u`，改成 shell 内建 `unset`；或 `command env -u X cmd` 绕过 shim |
+| 后端启动报 `EEXIST` / `PermissionError` | PYTHONPATH shim | `unset PYTHONPATH` |
+| Vite 秒退，日志有 `SAFE_DELETE` | NODE_OPTIONS shim | `unset NODE_OPTIONS` |
+| **命令 exit 0 但毫无输出、进程 0.3 秒就退出** | PATH 上的 `~/.local/bin/env` shim 遮蔽了真 `/usr/bin/env`（取决于 PATH 顺序），`env -u X cmd` 变成空操作 | 优先用 shell 内建 `unset`；`env -u` 并非总是失效，先 `type -a env` 确认；要用就写 `/usr/bin/env -u X cmd` |
 | 后端连不上库 | 容器没起 / 端口不对 | `docker compose up -d`；核对 `DATABASE_URL` 端口 |
 | 项目列表为空 | 没恢复 dump | 执行第三步 |
 | 图片 / 视频 404 | 没解包 storage | 执行第四步 |
@@ -261,3 +266,4 @@ python3 scripts/e2e_check.py 20 5
 | `docker compose up` 影响了别的项目 | 目录名与别的 compose 项目重名 | 见第三节第 2 步的警告 |
 | 前端页面空白 | `vite.config.js` 白名单缺图标 | 把新图标加进 `MUI_ICONS` 并清 `.vite` |
 | 前端依赖装不上 / `npm install` 无输出 | 同样可能撞上 `env` shim | 直接 `npm install`，不要包 `env -u NODE_OPTIONS` |
+| `git push` 连不上但 API 能访问 | `github.com` 与 `api.github.com` 是**不同 IP**，前者可能被阻断；`git push` 走的是前者 | 分别测两个域名：`nc -z github.com 443` vs `nc -z api.github.com 443`；换个能到 github.com 的代理节点 |

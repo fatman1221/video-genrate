@@ -188,7 +188,7 @@ workflow: FAILED → ANALYZE → REGENERATE
 curl -s http://127.0.0.1:8077/api/health | python3 -m json.tool
 
 # 2) 完整链路（真实产出 mp4 / mp3 / srt）
-env -u PYTHONPATH python scripts/e2e_check.py 20 5
+env -u PYTHONPATH python scripts/e2e_check.py 20 5     # 或：unset PYTHONPATH && python scripts/e2e_check.py 20 5
 
 # 3) Skill 契约可被 Agent 直接消费
 curl -s 'http://127.0.0.1:8077/api/skills?detail=true' | python3 -m json.tool | head -60
