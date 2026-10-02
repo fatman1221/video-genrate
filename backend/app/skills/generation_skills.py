@@ -335,12 +335,16 @@ def generate_all_videos(ctx: SkillContext, *, project_id: str, provider: str | N
     input_schema={"type": "object", "properties": {
         "project_id": {"type": "string"}, "shot_id": {"type": "string"},
         "text": {"type": "string"}, "voice": {"type": "string"},
+        "speaker": {"type": "string", "description": "Qwen3-TTS 音色名"},
+        "instruct": {"type": "string", "description": "情感指令"},
+        "force": {"type": "boolean", "description": "项目级批量时：true=全部镜头重做，false=只补缺配音的"},
         "rate": {"type": "integer"}, "provider": {"type": "string"}},
         "required": ["project_id"]},
 )
 def generate_voice(ctx: SkillContext, *, project_id: str, shot_id: str | None = None,
                    text: str | None = None, voice: str | None = None, rate: int | None = None,
-                   provider: str | None = None):
+                   provider: str | None = None, speaker: str | None = None,
+                   instruct: str | None = None, force: bool = False):
     _project(ctx.db, project_id)
     if shot_id:
         shot = _shot(ctx.db, shot_id)
@@ -350,12 +354,14 @@ def generate_voice(ctx: SkillContext, *, project_id: str, shot_id: str | None = 
         return tasks_svc.create_task(
             ctx.db, project_id=project_id, type=TaskType.GENERATE_VOICE,
             name=f"生成配音 {shot.code}", shot_id=shot.id,
-            payload={"text": text, "voice": voice, "rate": rate, "provider": provider},
+            payload={"text": text, "voice": voice, "rate": rate, "provider": provider,
+                     "speaker": speaker, "instruct": instruct},
             created_by=ctx.actor, commit=False,
         )
     return tasks_svc.create_task(
         ctx.db, project_id=project_id, type=TaskType.GENERATE_VOICE, name="批量生成配音",
-        payload={"voice": voice, "rate": rate, "provider": provider},
+        payload={"voice": voice, "rate": rate, "provider": provider,
+                 "speaker": speaker, "instruct": instruct, "force": bool(force)},
         created_by=ctx.actor, commit=False,
     )
 
@@ -366,19 +372,32 @@ def generate_voice(ctx: SkillContext, *, project_id: str, shot_id: str | None = 
     tags=("audio", "tts", "retry"),
     input_schema={"type": "object", "properties": {
         "shot_id": {"type": "string"}, "text": {"type": "string"},
-        "voice": {"type": "string"}, "rate": {"type": "integer"}}, "required": ["shot_id"]},
+        "voice": {"type": "string", "description": "音色（Qwen3-TTS speaker 名）"},
+        "speaker": {"type": "string", "description": "同 voice，语义更明确；两者都给时 speaker 优先"},
+        "instruct": {"type": "string", "description": "情感指令（自然语言，控制语气/情绪）"},
+        "voice_engine": {"type": "string", "description": "tts 引擎名，如 qwen3tts / local；留空用项目配置"},
+        "rate": {"type": "integer"}}, "required": ["shot_id"]},
 )
 def regenerate_voice(ctx: SkillContext, *, shot_id: str, text: str | None = None,
-                     voice: str | None = None, rate: int | None = None):
+                     voice: str | None = None, rate: int | None = None,
+                     speaker: str | None = None, instruct: str | None = None,
+                     voice_engine: str | None = None):
     shot = _shot(ctx.db, shot_id)
-    if text:
+    if text is not None:
         shot.voice_script = text
+    # 音色 / 情感指令写回镜头，让「重生成一次」与「项目级重跑」结果一致
+    if speaker or voice:
+        shot.voice_speaker = speaker or voice or ""
+    if instruct is not None:
+        shot.voice_instruct = instruct
     shot.voice_asset_id = None
     shot.voice_status = "PENDING"
     return tasks_svc.create_task(
         ctx.db, project_id=shot.project_id, type=TaskType.GENERATE_VOICE,
         name=f"重生成配音 {shot.code}", shot_id=shot.id,
-        payload={"text": text, "voice": voice, "rate": rate, "regenerate": True},
+        payload={"text": text, "voice": speaker or voice, "rate": rate,
+                 "speaker": speaker or voice, "instruct": instruct,
+                 "provider": voice_engine, "regenerate": True},
         created_by=ctx.actor, commit=False,
     )
 
@@ -405,17 +424,21 @@ def list_voices(ctx: SkillContext, *, limit: int = 80) -> dict[str, Any]:
         "project_id": {"type": "string"}, "prompt": {"type": "string"},
         "duration": {"type": "number"}, "mood": {"type": "string",
         "description": "calm / warm / happy / tense / epic / tech"},
+        "style": {"type": "string", "description": "BGM 曲风：pop（流行律动 108BPM）/ warm（温暖钢琴 76BPM）"},
+        "peak_db": {"type": "number", "description": "输出峰值 dBFS，默认 -9（合成时还会再乘 0.16）"},
         "provider": {"type": "string"}}, "required": ["project_id"]},
 )
 def generate_music(ctx: SkillContext, *, project_id: str, prompt: str = "",
                    duration: float | None = None, mood: str = "calm",
-                   provider: str | None = None):
+                   provider: str | None = None, style: str = "pop",
+                   peak_db: float | None = None):
     project = _project(ctx.db, project_id)
     return tasks_svc.create_task(
         ctx.db, project_id=project_id, type=TaskType.GENERATE_MUSIC,
-        name="生成背景音乐", payload={"prompt": prompt, "mood": mood,
-                                     "duration": duration or project.target_duration,
-                                     "provider": provider},
+        name=f"生成背景音乐（{style}）",
+        payload={"prompt": prompt, "mood": mood, "style": style, "peak_db": peak_db,
+                 "duration": duration or project.target_duration,
+                 "provider": provider},
         created_by=ctx.actor, commit=False,
     )
 

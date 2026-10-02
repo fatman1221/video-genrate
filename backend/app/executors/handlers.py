@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from ..config import settings
 from ..core.constants import (
     AssetType, SceneStatus, ShotStatus, TaskType,
@@ -348,24 +350,38 @@ def handle_generate_video(ctx: TaskContext) -> dict[str, Any]:
 def handle_generate_voice(ctx: TaskContext) -> dict[str, Any]:
     project = _project(ctx)
     payload = ctx.task.payload or {}
-    provider = _provider("tts", payload.get("provider") or settings.default_provider_tts)
+    proj_extra = project.extra if isinstance(project.extra, dict) else {}
+    # 引擎优先级：本次调用 > 项目 extra 的 voice_engine > 全局默认
+    provider = _provider("tts", payload.get("provider") or proj_extra.get("voice_engine")
+                         or settings.default_provider_tts)
 
     if ctx.task.shot_id:
         shot = _shot(ctx)
         text = payload.get("text") or shot.voice_script or shot.description
         if not text.strip():
             raise ValueError(f"Shot {shot.code} 没有旁白文本")
+        # 音色与情感指令：本次调用 > 镜头自身字段 > provider 默认
+        speaker = str(payload.get("speaker") or shot.voice_speaker or "")
+        instruct = payload.get("instruct")
+        if instruct is None:
+            instruct = shot.voice_instruct or ""
         ctx.event("voice.started", f"开始生成配音 Shot {shot.code}")
         ctx.progress(20, f"合成旁白：{shot.code}")
         result = provider.synthesize(
-            text=text, voice=payload.get("voice") or settings.tts_voice,
+            text=text, voice=speaker or payload.get("voice") or "",
             rate=int(payload.get("rate") or settings.tts_rate),
-            parameters={"workdir": str(_workdir(ctx, "voices")), **payload.get("extra", {})},
+            parameters={
+                "workdir": str(_workdir(ctx, "voices")),
+                "speaker": speaker, "instruct": instruct,
+                **payload.get("extra", {}),
+            },
         )
         asset = assets_svc.ingest_result(
             ctx.db, project_id=project.id, result=result, asset_type=AssetType.VOICE,
             name=f"{shot.code} 旁白", scene_id=shot.scene_id, shot_id=shot.id,
-            task_id=ctx.task.id, extra={"role": "shot_voice", "voice": payload.get("voice")},
+            task_id=ctx.task.id,
+            extra={"role": "shot_voice", "voice": speaker or payload.get("voice"),
+                   "speaker": speaker, "instruct": instruct},
         )
         shot.voice_asset_id = asset.id
         shot.voice_status = "READY"
@@ -375,14 +391,25 @@ def handle_generate_voice(ctx: TaskContext) -> dict[str, Any]:
         ctx.event("voice.finished", f"Shot {shot.code} 配音完成",
                   asset_id=asset.id, url=asset.url, duration=asset.duration)
         _maybe_complete_step(ctx.db, project, "voice")
-        return {"asset_id": asset.id, "url": asset.url, "duration": asset.duration, "shot_id": shot.id}
+        return {"asset_id": asset.id, "url": asset.url, "duration": asset.duration,
+                "shot_id": shot.id, "speaker": speaker, "instruct": instruct}
 
-    # 项目级：为所有缺配音的镜头批量生成
-    shots = projects_svc.pending_shots(ctx.db, project.id, kind="voice")
+    # 项目级：force=True 则全部镜头重做（调音台改完音色/情感指令后一键重跑），
+    # 否则只补缺配音的镜头。
+    if payload.get("force"):
+        shots = list(ctx.db.scalars(
+            select(Shot).where(Shot.project_id == project.id).order_by(Shot.sequence)
+        ))
+    else:
+        shots = projects_svc.pending_shots(ctx.db, project.id, kind="voice")
     created = [tasks_svc.create_task(
         ctx.db, project_id=project.id, type=TaskType.GENERATE_VOICE,
         name=f"配音 {s.code}", shot_id=s.id,
-        payload={"provider": payload.get("provider"), "voice": payload.get("voice")},
+        payload={"provider": payload.get("provider"),
+                 "voice": payload.get("voice") or s.voice_speaker,
+                 "speaker": payload.get("speaker") or s.voice_speaker,
+                 "instruct": payload.get("instruct") if payload.get("instruct") is not None
+                             else s.voice_instruct},
         parent_task_id=ctx.task.id, created_by=ctx.task.created_by, commit=False,
     ).id for s in shots]
     ctx.db.commit()
@@ -400,7 +427,10 @@ def handle_generate_music(ctx: TaskContext) -> dict[str, Any]:
         prompt=payload.get("prompt") or "",
         duration=duration,
         mood=payload.get("mood") or "calm",
-        parameters={"workdir": str(_workdir(ctx, "music")), **payload.get("extra", {})},
+        parameters={"workdir": str(_workdir(ctx, "music")),
+                    "style": payload.get("style") or "pop",
+                    "peak_db": payload.get("peak_db"),
+                    **payload.get("extra", {})},
     )
     asset = assets_svc.ingest_result(
         ctx.db, project_id=project.id, result=result, asset_type=AssetType.MUSIC,

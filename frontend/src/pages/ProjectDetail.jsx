@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Alert,
@@ -35,9 +35,13 @@ import AssetGrid from '../components/AssetGrid'
 import TaskTable from '../components/TaskTable'
 import LogStream from '../components/LogStream'
 import FinalPanel from '../components/FinalPanel'
-import { SKILL, deleteAsset, fmtBytes, fmtDuration, fmtTime, statusColor, useApi, useProjectStream } from '../api'
+import VoiceStudio from '../components/VoiceStudio'
+import {
+  SKILL, deleteAsset, fmtBytes, fmtDuration, fmtTime, getTtsVoices,
+  statusColor, useApi, useProjectStream,
+} from '../api'
 
-const TABS = ['概览', '脚本', '分镜', '人物', '素材', '任务', '日志', '成片']
+const TABS = ['概览', '脚本', '分镜', '人物', '素材', '配音', '任务', '日志', '成片']
 
 const ASSET_FILTERS = [
   { value: 'ALL', label: '全部' },
@@ -64,7 +68,7 @@ function BigRing({ value = 0, size = 88, stroke = 7 }) {
   return (
     <Box sx={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
       <Box component="svg" width={size} height={size} sx={{ transform: 'rotate(-90deg)', display: 'block' }}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(26,23,38,0.07)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(140,140,155,0.28)" strokeWidth={stroke} />
         <circle
           cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#6D4AFF" strokeWidth={stroke}
           strokeLinecap="round" strokeDasharray={c}
@@ -93,8 +97,8 @@ function StatTile({ label, value, tone = 'default' }) {
   return (
     <Box
       sx={{
-        px: 1.5, py: 1.1, borderRadius: 2, bgcolor: 'rgba(26,23,38,0.025)',
-        border: '1px solid rgba(26,23,38,0.05)', minWidth: 74,
+        px: 1.5, py: 1.1, borderRadius: 2, bgcolor: 'action.hover',
+        border: '1px solid', borderColor: 'divider', minWidth: 74,
       }}
     >
       <Typography variant="caption" color="text.disabled" sx={{ display: 'block', fontSize: 10.5 }}>
@@ -121,6 +125,16 @@ export default function ProjectDetail() {
   const [assetFilter, setAssetFilter] = useState('ALL')
   const [stageKey, setStageKey] = useState(null)
   const [stageOpen, setStageOpen] = useState(false)
+  const [voicesCfg, setVoicesCfg] = useState(null)
+
+  // 配音音色清单（分镜编辑与调音台共用）：只在进项目时拉一次
+  useEffect(() => {
+    let alive = true
+    getTtsVoices()
+      .then((d) => { if (alive) setVoicesCfg(d) })
+      .catch(() => { if (alive) setVoicesCfg(null) })
+    return () => { alive = false }
+  }, [projectId])
 
   const { data: overview, reload: reloadOverview } = useApi(
     `/api/projects/${projectId}/overview`, null, { poll: 3000 },
@@ -176,6 +190,12 @@ export default function ProjectDetail() {
   const characters = charsData?.items || []
   const nodes = pipeline?.nodes || []
   const selectedNode = nodes.find((n) => n.step_key === stageKey) || null
+  // 分镜编辑弹窗的音色下拉：优先 Qwen3-TTS 的音色（项目在用它）
+  const qwenSpeakers = useMemo(() => {
+    const engines = voicesCfg?.engines || []
+    const eng = engines.find((e) => e.name === 'qwen3tts') || engines[0]
+    return eng?.speakers || []
+  }, [voicesCfg])
 
   const run = async (label, promise) => {
     setBusy(true)
@@ -226,18 +246,48 @@ export default function ProjectDetail() {
   }
 
   /* ----------------------------- 镜头 / 素材 ----------------------------- */
-  const regenerateShot = async (shot, kind) => {
+  const regenerateShot = async (shot, kind, overrides = undefined) => {
     setBusyShot(shot.shot_id)
     try {
-      const fn = kind === 'image' ? SKILL.regenerateImage : SKILL.regenerateVideo
-      const res = await fn({ shot_id: shot.shot_id, reason: 'Web UI 手动重生成' })
+      let res
+      if (kind === 'voice') {
+        // 配音可带「本次改动」一起提交，省掉先存后跑的来回
+        const payload = {
+          shot_id: shot.shot_id,
+          reason: 'Web UI 手动重生成配音',
+        }
+        if (overrides?.voice_script) payload.text = overrides.voice_script
+        if (overrides?.voice_speaker) payload.speaker = overrides.voice_speaker
+        if (overrides?.voice_instruct) payload.instruct = overrides.voice_instruct
+        res = await SKILL.regenerateVoice(payload)
+      } else {
+        const fn = kind === 'image' ? SKILL.regenerateImage : SKILL.regenerateVideo
+        res = await fn({ shot_id: shot.shot_id, reason: 'Web UI 手动重生成' })
+      }
       if (!res.ok) throw new Error(res.error)
-      setToast({ type: 'success', text: `${shot.code} 已重新入队` })
+      setToast({ type: 'success', text: `${shot.code} ${kind === 'voice' ? '配音' : ''}已重新入队` })
       setTimeout(reloadAll, 500)
     } catch (err) {
       setToast({ type: 'error', text: `重生成失败：${err.message}` })
     } finally {
       setBusyShot(null)
+    }
+  }
+
+  /** 保存镜头编辑（提示词 / 台词 / 音色 / 情感指令 / 时长）。 */
+  const saveShot = async (payload) => {
+    setBusy(true)
+    try {
+      const res = await SKILL.updateShot(payload)
+      if (!res.ok) throw new Error(res.error)
+      setToast({ type: 'success', text: '镜头已保存' })
+      setTimeout(reloadAll, 300)
+      return true
+    } catch (err) {
+      setToast({ type: 'error', text: `保存失败：${err.message}` })
+      return false
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -273,7 +323,7 @@ export default function ProjectDetail() {
           <IconButton
             onClick={() => navigate(project.series_id ? `/series/${project.series_id}` : '/')}
             size="small"
-            sx={{ bgcolor: '#fff', border: '1px solid rgba(26,23,38,0.07)' }}
+            sx={{ bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider' }}
           >
             <ArrowBackIcon fontSize="small" />
           </IconButton>
@@ -347,7 +397,7 @@ export default function ProjectDetail() {
               </Box>
             </Stack>
 
-            <Box sx={{ flex: 1, minWidth: 0, borderLeft: { xl: '1px solid rgba(26,23,38,0.07)' }, pl: { xl: 2.5 } }}>
+            <Box sx={{ flex: 1, minWidth: 0, borderLeft: { xl: '1px solid' }, borderLeftColor: 'divider', pl: { xl: 2.5 } }}>
               <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                 <Typography variant="subtitle2" sx={{ fontSize: 13 }}>
                   生产流水线
@@ -395,7 +445,7 @@ export default function ProjectDetail() {
         onChange={(e, v) => setTab(v)}
         variant="scrollable"
         scrollButtons={false}
-        sx={{ mb: 2, minHeight: 44, borderBottom: '1px solid rgba(26,23,38,0.07)' }}
+        sx={{ mb: 2, minHeight: 44, borderBottom: '1px solid', borderBottomColor: 'divider' }}
       >
         {TABS.map((label) => (
           <Tab key={label} label={label} sx={{ mr: 0.5 }} />
@@ -427,8 +477,8 @@ export default function ProjectDetail() {
                   <Box
                     sx={{
                       height: 200, borderRadius: 2, display: 'flex', alignItems: 'center',
-                      justifyContent: 'center', bgcolor: 'rgba(26,23,38,0.025)',
-                      border: '1px dashed rgba(26,23,38,0.12)',
+                      justifyContent: 'center', bgcolor: 'action.hover',
+                      border: '1px dashed', borderColor: 'divider',
                     }}
                   >
                     <Stack alignItems="center" spacing={1}>
@@ -528,14 +578,23 @@ export default function ProjectDetail() {
       )}
 
       {/* 2 分镜 */}
-      {tab === 2 && <ShotGrid shots={shots} onRegenerate={regenerateShot} busyId={busyShot} />}
+      {tab === 2 && (
+        <ShotGrid
+          shots={shots}
+          onRegenerate={regenerateShot}
+          busyId={busyShot}
+          busy={busy}
+          speakers={qwenSpeakers}
+          onSaveShot={saveShot}
+        />
+      )}
 
       {/* 3 人物 */}
       {tab === 3 && (
         <Grid container spacing={2.5}>
           {characters.length === 0 && (
             <Grid item xs={12}>
-              <Paper sx={{ py: 6, textAlign: 'center', border: '1px dashed rgba(26,23,38,0.12)' }}>
+              <Paper sx={{ py: 6, textAlign: 'center', border: '1px dashed', borderColor: 'divider' }}>
                 <Typography color="text.secondary">还没有角色</Typography>
               </Paper>
             </Grid>
@@ -545,7 +604,7 @@ export default function ProjectDetail() {
             return (
               <Grid item xs={12} sm={6} lg={4} key={c.character_id}>
                 <Card sx={{ height: '100%' }}>
-                  <Box sx={{ aspectRatio: '4 / 3', bgcolor: '#F5F5F9', position: 'relative' }}>
+                  <Box sx={{ aspectRatio: '4 / 3', bgcolor: 'action.hover', position: 'relative' }}>
                     {ref ? (
                       <Box component="img" src={ref.url} alt={c.name} sx={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : (
@@ -599,8 +658,21 @@ export default function ProjectDetail() {
         </Box>
       )}
 
-      {/* 5 任务 */}
+      {/* 5 配音 · BGM 调音台 */}
       {tab === 5 && (
+        <VoiceStudio
+          projectId={projectId}
+          shots={shots}
+          assets={assets}
+          busy={busy}
+          run={run}
+          onRefresh={reloadAll}
+          notify={(type, text) => setToast({ type, text })}
+        />
+      )}
+
+      {/* 6 任务 */}
+      {tab === 6 && (
         <TaskTable
           tasks={tasks}
           onRetry={(t) => run('重新入队', SKILL.retryTask({ task_id: t.task_id, reset_attempts: true }))}
@@ -608,17 +680,19 @@ export default function ProjectDetail() {
         />
       )}
 
-      {/* 6 日志 */}
-      {tab === 6 && <LogStream logs={mergedLogs} connected={connected} height={620} />}
+      {/* 7 日志 */}
+      {tab === 7 && <LogStream logs={mergedLogs} connected={connected} height={620} />}
 
-      {/* 7 成片 */}
-      {tab === 7 && (
+      {/* 8 成片 */}
+      {tab === 8 && (
         <FinalPanel
+          projectId={projectId}
           asset={overview?.final_output}
           quality={overview?.quality}
           busy={busy}
-          onCompose={() => run('合成成片', SKILL.compose({ project_id: projectId }))}
+          onCompose={() => run('合成成片', SKILL.compose({ project_id: projectId, with_music: true, with_subtitle: true }))}
           onQuality={() => run('质量检查', SKILL.quality({ project_id: projectId, auto_repair: false }))}
+          onRefresh={reloadOverview}
         />
       )}
 

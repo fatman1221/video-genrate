@@ -32,7 +32,7 @@ function Preview({ asset }) {
         component="img"
         src={asset.url}
         alt={asset.name}
-        sx={{ width: '100%', borderRadius: 2, bgcolor: '#f2f0f8' }}
+        sx={{ width: '100%', borderRadius: 2, bgcolor: 'action.hover' }}
       />
     )
   }
@@ -200,7 +200,7 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, s
                   <Typography variant="caption" color="text.secondary">
                     生成参数
                   </Typography>
-                  <Box sx={{ bgcolor: 'rgba(124,77,255,0.05)', p: 1, borderRadius: 1, maxHeight: 160, overflow: 'auto' }}>
+                  <Box sx={{ bgcolor: 'action.hover', p: 1, borderRadius: 1, maxHeight: 160, overflow: 'auto' }}>
                     <pre style={{ margin: 0, fontSize: 11 }}>
                       {JSON.stringify(detail.parameters || {}, null, 2)}
                     </pre>

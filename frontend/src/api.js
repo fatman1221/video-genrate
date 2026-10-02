@@ -22,6 +22,7 @@ export const SKILL = {
   regenerateVideo: (p) => invokeSkill('regenerate_video', p),
   regenerateImage: (p) => invokeSkill('regenerate_image', p),
   regenerateVoice: (p) => invokeSkill('regenerate_voice', p),
+  updateShot: (p) => invokeAsHuman('update_shot', p),
   mergeVideo: (p) => invokeSkill('merge_video', p),
   generateMusic: (p) => invokeSkill('generate_music', p),
   generateSubtitle: (p) => invokeSkill('generate_subtitle', p),
@@ -71,6 +72,9 @@ export const removeSeries = (seriesId, deleteEpisodes = false) =>
     .then((r) => r.data)
 
 export const getPipeline = (projectId) => get(`/api/projects/${projectId}/pipeline`)
+
+/** 项目历史上产出的全部成片（版本对比用，按时间倒序）。 */
+export const getProjectOutputs = (projectId) => get(`/api/projects/${projectId}/outputs`)
 
 export const deleteAsset = (assetId) =>
   fetch(`/api/assets/${assetId}?confirm=true`, { method: 'DELETE' }).then((r) => {

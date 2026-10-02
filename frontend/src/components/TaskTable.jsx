@@ -147,7 +147,7 @@ export default function TaskTable({ tasks = [], onRetry, onCancel }) {
                           <Box
                             sx={{
                               mt: 0.5,
-                              bgcolor: 'rgba(124,77,255,0.05)',
+                              bgcolor: 'action.hover',
                               p: 1.2,
                               borderRadius: 1.5,
                               maxHeight: 220,
@@ -164,7 +164,7 @@ export default function TaskTable({ tasks = [], onRetry, onCancel }) {
                           <Box
                             sx={{
                               mt: 0.5,
-                              bgcolor: 'rgba(124,77,255,0.05)',
+                              bgcolor: 'action.hover',
                               p: 1.2,
                               borderRadius: 1.5,
                               maxHeight: 140,

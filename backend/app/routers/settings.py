@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings as app_settings
 from ..database import get_db
-from ..providers.audio_providers import available_voices
+from ..providers.audio_providers import available_voices, music_styles, tts_engines
 from ..services import settings as settings_svc
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -51,6 +51,20 @@ def update_provider_settings(payload: dict[str, Any] = Body(...),
 
 @router.get("/voices")
 def list_tts_voices(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
-    """本机可用的 TTS 音色（素材中心生成语音时选择）。"""
+    """本机可用的 TTS 音色与引擎清单（配音调音台 / 素材中心生成语音时使用）。
+
+    - ``voices``：扁平音色名列表（兼容旧调用方）
+    - ``engines``：按引擎分组的音色，含 ``supports_instruct`` 与默认音色，
+      前端据此渲染音色下拉与「情感指令」输入框，不硬编码任何音色名
+    - ``music_styles``：BGM 可选曲风（对应 scripts/gen_bgm.py 的 --style）
+    """
     voices = available_voices()
-    return {"voices": voices[:limit], "total": len(voices), "default": app_settings.tts_voice}
+    engines = tts_engines()
+    return {
+        "voices": voices[:limit],
+        "total": len(voices),
+        "default": app_settings.tts_voice,
+        "engines": engines,
+        "default_engine": engines[0]["name"] if engines else "",
+        "music_styles": music_styles(),
+    }

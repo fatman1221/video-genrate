@@ -92,6 +92,9 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("projects", "episode_no", "INTEGER DEFAULT 0"),
     # 系列级角色（跨集复用）
     ("characters", "series_id", "VARCHAR(40) NULL"),
+    # 镜头级配音参数（音色 + 情感指令），供 Web UI 调音台编辑
+    ("shots", "voice_speaker", "VARCHAR(60) DEFAULT ''"),
+    ("shots", "voice_instruct", "TEXT DEFAULT ''"),
 )
 
 #: 需要解除 NOT NULL 的列。

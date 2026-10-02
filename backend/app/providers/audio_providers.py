@@ -50,6 +50,59 @@ class LocalTTSProvider(TTSProvider):
         )
 
 
+class Qwen3TTSProvider(TTSProvider):
+    """Qwen3-TTS CustomVoice：本地 1.7B，支持音色切换与自然语言情感指令。
+
+    torch 依赖重（约 3.5G 权重 + cu126），与后端进程隔离，一律子进程调用
+    ``tools/qwen3-tts/infer.py``。参数经 ``parameters`` 透传：
+
+    - ``speaker``：音色名（sohee / vivian / uncle_fu ...），见 ``engine.QWEN3_SPEAKERS``
+    - ``instruct``：情感指令，如「像跟朋友聊天一样娓娓道来，声音明亮清晰」
+    - ``device``：auto / cuda:0 / cpu
+    """
+
+    name = "qwen3tts"
+    display_name = "Qwen3-TTS 情感配音（本地）"
+    capabilities = ("tts", "offline", "emotion", "multi_voice")
+    doc = "阿里开源 Qwen3-TTS-12Hz-1.7B-CustomVoice，情感指令驱动语气，9 种音色可选。"
+
+    @property
+    def functional(self) -> bool:  # type: ignore[override]
+        return engine.qwen3tts_available()
+
+    def synthesize(self, *, text: str, voice: str = "", rate: int = 0,
+                   parameters: dict[str, Any] | None = None) -> GenerationResult:
+        started = time.time()
+        params = dict(parameters or {})
+        if not text.strip():
+            raise ProviderError("TTS 文本为空", retryable=False)
+        if not engine.qwen3tts_available():
+            raise ProviderError(
+                "Qwen3-TTS 不可用（检查 tools/qwen3-tts/ 与 qwen3tts_enabled 配置）",
+                retryable=False,
+            )
+        workdir = Path(params.get("workdir") or tempfile.mkdtemp(prefix="tts_"))
+        workdir.mkdir(parents=True, exist_ok=True)
+        out = workdir / f"voice_{int(time.time() * 1000)}.mp3"
+
+        speaker = voice or params.get("speaker") or settings.qwen3tts_speaker
+        instruct = params.get("instruct") or ""
+        engine.qwen3_tts_synthesize(
+            text=text, out_path=str(out), speaker=speaker, instruct=instruct,
+            device=str(params.get("device") or settings.qwen3tts_device),
+        )
+        info = engine.ffprobe(out)
+        return GenerationResult(
+            file_path=str(out), provider=self.name, model=settings.qwen3tts_model,
+            workflow="qwen3_tts_custom_voice",
+            parameters={**params, "speaker": speaker, "instruct": instruct},
+            duration=info["duration"], format="mp3", size_bytes=info["size_bytes"],
+            prompt=text, extra={"sample_rate": info["sample_rate"], "speaker": speaker,
+                                "instruct": instruct},
+            elapsed_ms=int((time.time() - started) * 1000),
+        )
+
+
 class CloudTTSProvider(TTSProvider):
     name = "cloud"
     display_name = "云端 TTS API（通用适配器）"
@@ -130,12 +183,22 @@ class LocalMusicProvider(MusicProvider):
         workdir = Path(params.get("workdir") or tempfile.mkdtemp(prefix="music_"))
         workdir.mkdir(parents=True, exist_ok=True)
         out = workdir / f"music_{int(time.time() * 1000)}.mp3"
-        engine.synth_music(out_path=str(out), duration=duration, mood=mood, prompt=prompt)
+        style = str(params.get("style") or "pop")
+        if engine.bgm_synth_available():
+            # 真实乐器合成（和弦分解 + 鼓组/贝斯/拨弦），比 lavfi 正弦垫音好得多
+            engine.synth_bgm(
+                out_path=str(out), duration=duration, style=style,
+                peak_db=float(params.get("peak_db") or -9.0),
+            )
+            model, workflow = f"bgm-synth-{style}", "bgm_synth"
+        else:
+            engine.synth_music(out_path=str(out), duration=duration, mood=mood, prompt=prompt)
+            model, workflow = "ffmpeg-synth-pad", "local_music_synthesis"
         info = engine.ffprobe(out)
         return GenerationResult(
-            file_path=str(out), provider=self.name, model="ffmpeg-synth-pad",
-            workflow="local_music_synthesis",
-            parameters={**params, "mood": mood, "duration": duration},
+            file_path=str(out), provider=self.name, model=model,
+            workflow=workflow,
+            parameters={**params, "mood": mood, "style": style, "duration": duration},
             duration=info["duration"], format="mp3", size_bytes=info["size_bytes"],
             prompt=prompt or mood,
             elapsed_ms=int((time.time() - started) * 1000),
@@ -187,11 +250,53 @@ class CloudMusicProvider(MusicProvider):
 
 
 def available_voices() -> list[str]:
-    return engine.list_voices()
+    """本机可用的全部音色名（含 Qwen3-TTS 的 speaker），供下拉框使用。"""
+    voices = list(engine.list_voices())
+    for sp in engine.QWEN3_SPEAKERS:
+        if sp["name"] not in voices:
+            voices.append(sp["name"])
+    return voices
+
+
+def tts_engines() -> list[dict[str, Any]]:
+    """给 Web UI 的 TTS 引擎清单：引擎 → 可用音色 → 默认值。
+
+    前端据此渲染「配音调音台」，不必硬编码任何音色名。
+    """
+    engines: list[dict[str, Any]] = []
+    if engine.qwen3tts_available():
+        engines.append({
+            "name": "qwen3tts",
+            "label": "Qwen3-TTS 情感配音（本地）",
+            "desc": "支持情感指令与 9 种音色，配音有情绪起伏；单条约几秒到十几秒",
+            "supports_instruct": True,
+            "default_speaker": settings.qwen3tts_speaker,
+            "speakers": [dict(sp) for sp in engine.QWEN3_SPEAKERS],
+        })
+    engines.append({
+        "name": "local",
+        "label": "系统 / edge-tts",
+        "desc": "轻量快速，无情感指令；音色来自系统与 edge-tts",
+        "supports_instruct": False,
+        "default_speaker": settings.tts_voice,
+        "speakers": [{"name": v, "label": v, "desc": ""} for v in engine.list_voices()],
+    })
+    return engines
+
+
+def music_styles() -> list[dict[str, Any]]:
+    """BGM 可选的曲风（对应 scripts/gen_bgm.py 的 --style）。"""
+    return [
+        {"name": "pop", "label": "流行律动（108BPM）",
+         "desc": "鼓组 + 贝斯 + 明亮拨弦，经典 4536 走向，适合短视频/vlog"},
+        {"name": "warm", "label": "温暖钢琴（76BPM）",
+         "desc": "钢琴和弦分解 + 弦乐垫，安静治愈，适合叙事"},
+    ]
 
 
 def register() -> None:
     registry.register(LocalTTSProvider(), default=True)
+    registry.register(Qwen3TTSProvider())
     registry.register(CloudTTSProvider())
     registry.register(LocalMusicProvider(), default=True)
     registry.register(CloudMusicProvider())

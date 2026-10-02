@@ -517,6 +517,10 @@ def create_shot(ctx: SkillContext, *, scene_id: str, **fields: Any) -> dict[str,
         "visual_style": {"type": "string"}, "character_ids": {"type": "array", "items": {"type": "string"}},
         "image_prompt": {"type": "string"}, "video_prompt": {"type": "string"},
         "negative_prompt": {"type": "string"}, "voice_script": {"type": "string"},
+        "voice_speaker": {"type": "string",
+                          "description": "配音音色（Qwen3-TTS speaker，如 sohee / vivian / uncle_fu）"},
+        "voice_instruct": {"type": "string",
+                           "description": "配音情感指令（自然语言，如「像跟朋友聊天一样娓娓道来，声音明亮清晰」）"},
         "subtitle_text": {"type": "string"}, "status": {"type": "string"}},
         "required": ["shot_id"]},
 )
@@ -534,7 +538,8 @@ def update_shot(ctx: SkillContext, *, shot_id: str, **fields: Any) -> dict[str, 
                 value = _resolve_character_ids(ctx.db, owner, value)
         if key in {"sequence", "duration", "description", "camera", "location", "visual_style",
                    "character_ids", "image_prompt", "video_prompt", "negative_prompt",
-                   "voice_script", "subtitle_text", "status"}:
+                   "voice_script", "voice_speaker", "voice_instruct",
+                   "subtitle_text", "status"}:
             setattr(shot, key, value)
             changed[key] = value
     ctx.db.commit()

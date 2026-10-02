@@ -1,4 +1,5 @@
 import { Box, Stack, Tooltip, Typography } from '@mui/material'
+import { alpha, useTheme } from '@mui/material/styles'
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined'
 import ViewQuiltOutlinedIcon from '@mui/icons-material/ViewQuiltOutlined'
 import FaceRetouchingNaturalOutlinedIcon from '@mui/icons-material/FaceRetouchingNaturalOutlined'
@@ -29,13 +30,33 @@ const STAGE_ICON = {
   quality_check: VerifiedOutlinedIcon,
 }
 
-const STATE_STYLE = {
-  SUCCESS: { fg: '#6D4AFF', bg: '#F1EDFF', border: 'rgba(109,74,255,0.24)' },
-  RUNNING: { fg: '#ffffff', bg: '#6D4AFF', border: '#6D4AFF', pulse: true },
-  FAILED: { fg: '#E2484C', bg: '#FDEEEF', border: 'rgba(226,72,76,0.28)' },
-  PENDING: { fg: '#A9A5B8', bg: '#F5F5F9', border: 'rgba(26,23,38,0.10)' },
-  SKIPPED: { fg: '#A9A5B8', bg: '#F5F5F9', border: 'rgba(26,23,38,0.10)' },
-}
+/** 节点状态配色。深浅两套：暗底上把主色/底色提亮一档，避免糊成一片。 */
+const stateStyle = (dark) => ({
+  SUCCESS: {
+    fg: dark ? '#A78DFF' : '#6D4AFF',
+    bg: dark ? alpha('#9B82FF', 0.18) : '#F1EDFF',
+    border: alpha(dark ? '#9B82FF' : '#6D4AFF', dark ? 0.4 : 0.24),
+  },
+  RUNNING: {
+    fg: '#ffffff', bg: dark ? '#7C5CFF' : '#6D4AFF',
+    border: dark ? '#7C5CFF' : '#6D4AFF', pulse: true,
+  },
+  FAILED: {
+    fg: dark ? '#F0676B' : '#E2484C',
+    bg: dark ? alpha('#F0676B', 0.16) : '#FDEEEF',
+    border: alpha(dark ? '#F0676B' : '#E2484C', 0.34),
+  },
+  PENDING: {
+    fg: dark ? '#8B88A0' : '#A9A5B8',
+    bg: dark ? alpha('#EDEBF7', 0.06) : '#F5F5F9',
+    border: dark ? alpha('#EDEBF7', 0.12) : 'rgba(140,140,155,0.24)',
+  },
+  SKIPPED: {
+    fg: dark ? '#8B88A0' : '#A9A5B8',
+    bg: dark ? alpha('#EDEBF7', 0.06) : '#F5F5F9',
+    border: dark ? alpha('#EDEBF7', 0.12) : 'rgba(140,140,155,0.24)',
+  },
+})
 
 const SIZE = 46
 const STROKE = 3
@@ -45,7 +66,7 @@ function Ring({ value = 0, color, size = SIZE, stroke = STROKE }) {
   const c = 2 * Math.PI * r
   return (
     <Box component="svg" width={size} height={size} sx={{ transform: 'rotate(-90deg)', display: 'block' }}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(26,23,38,0.07)" strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(140,140,155,0.28)" strokeWidth={stroke} />
       <circle
         cx={size / 2}
         cy={size / 2}
@@ -69,7 +90,7 @@ function ReviewBadge({ status }) {
         sx={{
           position: 'absolute', top: -2, right: -2, width: 18, height: 18, borderRadius: '50%',
           bgcolor: 'success.main', color: '#fff', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', border: '2px solid #fff',
+          justifyContent: 'center', border: '2px solid', borderColor: 'background.paper',
         }}
       >
         <CheckIcon sx={{ fontSize: 11 }} />
@@ -82,7 +103,7 @@ function ReviewBadge({ status }) {
         sx={{
           position: 'absolute', top: -2, right: -2, width: 18, height: 18, borderRadius: '50%',
           bgcolor: 'warning.main', color: '#fff', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', border: '2px solid #fff',
+          justifyContent: 'center', border: '2px solid', borderColor: 'background.paper',
         }}
       >
         <PriorityHighIcon sx={{ fontSize: 12 }} />
@@ -93,8 +114,10 @@ function ReviewBadge({ status }) {
 }
 
 function Node({ node, selected, onClick }) {
+  const theme = useTheme()
+  const styleMap = stateStyle(theme.palette.mode === 'dark')
   const Icon = STAGE_ICON[node.step_key] || AutoAwesomeOutlinedIcon
-  const style = STATE_STYLE[node.state] || STATE_STYLE.PENDING
+  const style = styleMap[node.state] || styleMap.PENDING
   const isRunning = node.state === 'RUNNING'
 
   return (
@@ -176,6 +199,7 @@ function Node({ node, selected, onClick }) {
 }
 
 function Connector({ done }) {
+  const dark = useTheme().palette.mode === 'dark'
   return (
     <Box
       sx={{
@@ -187,7 +211,7 @@ function Connector({ done }) {
         borderRadius: 2,
         background: done
           ? 'linear-gradient(90deg, rgba(109,74,255,0.5), rgba(109,74,255,0.28))'
-          : 'repeating-linear-gradient(90deg, rgba(26,23,38,0.14) 0 5px, transparent 5px 11px)',
+          : `repeating-linear-gradient(90deg, ${dark ? 'rgba(237,235,247,0.18)' : 'rgba(26,23,38,0.14)'} 0 5px, transparent 5px 11px)`,
       }}
     />
   )
@@ -198,6 +222,7 @@ function Connector({ done }) {
  * 支持点击查看产出 / 回退 / 重新生成 / 审核。
  */
 export default function PipelineFlow({ nodes = [], selectedKey, onSelect }) {
+  const dark = useTheme().palette.mode === 'dark'
   if (!nodes.length) return null
 
   return (
@@ -208,7 +233,10 @@ export default function PipelineFlow({ nodes = [], selectedKey, onSelect }) {
         pb: 0.5,
         scrollbarWidth: 'thin',
         '&::-webkit-scrollbar': { height: 6 },
-        '&::-webkit-scrollbar-thumb': { background: 'rgba(26,23,38,0.14)', borderRadius: 6 },
+        '&::-webkit-scrollbar-thumb': {
+          background: dark ? 'rgba(237,235,247,0.20)' : 'rgba(26,23,38,0.14)',
+          borderRadius: 6,
+        },
       }}
     >
       <Stack
@@ -227,4 +255,4 @@ export default function PipelineFlow({ nodes = [], selectedKey, onSelect }) {
   )
 }
 
-export { STAGE_ICON, STATE_STYLE }
+export { STAGE_ICON }

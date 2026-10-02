@@ -15,6 +15,16 @@ def iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _media_url(url: str | None) -> str:
+    """媒体地址统一成正斜杠。
+
+    历史数据里 `asset.url` 是 Windows 反斜杠（`.../media/voices\\proj\\a.mp3`），
+    浏览器虽然会自动纠正，但下载文件名、复制出去的链接都会带着 `\\`，
+    所以在序列化出口处一次性抹平。
+    """
+    return (url or "").replace("\\", "/")
+
+
 def asset_brief(asset: Asset | None) -> dict[str, Any] | None:
     if asset is None:
         return None
@@ -24,7 +34,7 @@ def asset_brief(asset: Asset | None) -> dict[str, Any] | None:
         "project_id": asset.project_id,
         "type": asset.type,
         "name": asset.name,
-        "url": asset.url,
+        "url": _media_url(asset.url),
         "file_path": asset.file_path,
         "status": asset.status,
         "format": asset.format,
@@ -149,6 +159,8 @@ def serialize_shot(shot: Shot, *, db: Session | None = None, with_assets: bool =
         "video_prompt": shot.video_prompt,
         "negative_prompt": shot.negative_prompt,
         "voice_script": shot.voice_script,
+        "voice_speaker": shot.voice_speaker or "",
+        "voice_instruct": shot.voice_instruct or "",
         "subtitle_text": shot.subtitle_text,
         "status": shot.status,
         "image_status": shot.image_status,

@@ -208,6 +208,12 @@ class Shot(Base, TimestampMixin):
     negative_prompt: Mapped[str] = mapped_column(Text, default="")
     voice_script: Mapped[str] = mapped_column(Text, default="")
     subtitle_text: Mapped[str] = mapped_column(Text, default="")
+    #: 配音音色（Qwen3-TTS 的 speaker 名，如 sohee / vivian / uncle_fu）。
+    #: 留空时由 provider 的默认音色兜底。
+    voice_speaker: Mapped[str] = mapped_column(String(60), default="")
+    #: 情感/语气指令（自然语言，如「像跟朋友聊天一样娓娓道来」）。
+    #: Qwen3-TTS CustomVoice 用它控制情绪，是「配音有感情」的关键。
+    voice_instruct: Mapped[str] = mapped_column(Text, default="")
 
     status: Mapped[str] = mapped_column(String(32), default=ShotStatus.PENDING, index=True)
     image_status: Mapped[str] = mapped_column(String(32), default="PENDING")

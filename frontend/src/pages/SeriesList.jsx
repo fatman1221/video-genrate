@@ -218,7 +218,7 @@ export default function SeriesList() {
       {loading && <LinearProgress sx={{ mb: 2 }} />}
 
       {series.length === 0 ? (
-        <Paper sx={{ py: 8, textAlign: 'center', border: '1px dashed rgba(26,23,38,0.12)' }}>
+        <Paper sx={{ py: 8, textAlign: 'center', border: '1px dashed', borderColor: 'divider' }}>
           <SubscriptionsOutlinedIcon sx={{ fontSize: 52, color: 'primary.light', mb: 1 }} />
           <Typography variant="h6">还没有连续剧</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, mt: 0.5 }}>

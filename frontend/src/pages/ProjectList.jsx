@@ -255,7 +255,7 @@ export default function ProjectList() {
       {loading && <LinearProgress sx={{ mb: 2 }} />}
 
       {projects.length === 0 ? (
-        <Paper sx={{ py: 8, textAlign: 'center', border: '1px dashed rgba(26,23,38,0.12)' }}>
+        <Paper sx={{ py: 8, textAlign: 'center', border: '1px dashed', borderColor: 'divider' }}>
           <AutoAwesomeMotionIcon sx={{ fontSize: 52, color: 'primary.light', mb: 1 }} />
           <Typography variant="h6">还没有项目</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, mt: 0.5 }}>

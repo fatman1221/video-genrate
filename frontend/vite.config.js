@@ -13,15 +13,15 @@ import react from '@vitejs/plugin-react'
  */
 const MUI_ICONS = [
   'Add', 'Approval', 'ApprovalOutlined', 'ArrowBack', 'AudiotrackOutlined', 'AutoAwesome',
-  'AutoAwesomeMotion', 'Block', 'Check', 'CheckCircle', 'Close', 'CloudOutlined',
-  'CollectionsOutlined', 'ContentCut', 'DeleteOutline', 'Description',
-  'Error', 'ErrorOutline', 'FaceOutlined', 'FaceRetouchingNatural', 'FactCheck', 'GraphicEq',
-  'Image', 'InfoOutlined', 'LandscapeOutlined', 'MemoryOutlined',
-  'MenuBookOutlined', 'MicNone', 'Movie', 'MovieCreation', 'MovieFilter',
-  'MovieFilterOutlined', 'MusicNote', 'PersonOutline', 'PlayArrow', 'PlayCircleOutline',
-  'PriorityHigh', 'Refresh', 'Replay', 'RestartAlt', 'RocketLaunch', 'SaveOutlined',
-  'SmartToy', 'SubscriptionsOutlined', 'Subtitles', 'TerminalOutlined', 'TuneOutlined',
-  'Undo', 'Verified', 'ViewQuilt',
+  'AutoAwesomeMotion', 'Block', 'Brightness4', 'Brightness7', 'Check', 'CheckCircle', 'Close',
+  'CloudOutlined', 'CollectionsOutlined', 'Compare', 'ContentCut', 'DeleteOutline', 'Description',
+  'Download', 'EditOutlined', 'Error', 'ErrorOutline', 'FaceOutlined', 'FaceRetouchingNatural',
+  'FactCheck', 'GraphicEq', 'Image', 'InfoOutlined', 'LandscapeOutlined', 'MemoryOutlined',
+  'MenuBookOutlined', 'Mic', 'MicNone', 'Movie', 'MovieCreation', 'MovieFilter',
+  'MovieFilterOutlined', 'MusicNote', 'OpenInNew', 'PersonOutline', 'PlayArrow',
+  'PlayCircleOutline', 'PriorityHigh', 'RecordVoiceOver', 'Refresh', 'Replay', 'RestartAlt',
+  'RocketLaunch', 'SaveOutlined', 'SmartToy', 'SubscriptionsOutlined', 'Subtitles',
+  'TerminalOutlined', 'TuneOutlined', 'Undo', 'Videocam', 'Verified', 'ViewQuilt', 'VolumeUp',
 ].map((n) => `@mui/icons-material/${n}`)
 
 export default defineConfig({

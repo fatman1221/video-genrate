@@ -972,6 +972,147 @@ def say_tts(*, text: str, out_path: str, voice: str = "", rate: int = 0) -> str:
     raise EngineError("所有 TTS 通道均失败", retryable=False, detail="; ".join(errors))
 
 
+# --------------------------------------------------------------------------- #
+# Qwen3-TTS（本地情感配音：音色 + 自然语言情感指令）
+# --------------------------------------------------------------------------- #
+
+#: Qwen3-TTS CustomVoice 的可用音色，取自模型 config.json 的 spk_id。
+#: label / desc 供 Web UI 直接渲染，避免前端硬编码。
+QWEN3_SPEAKERS: tuple[dict[str, str], ...] = (
+    {"name": "sohee", "label": "sohee · 明亮女声", "desc": "音色最亮，适合活泼、日常 vlog 风"},
+    {"name": "vivian", "label": "vivian · 温暖女声", "desc": "中低女声，叙事感强"},
+    {"name": "serena", "label": "serena · 温柔女声", "desc": "气声偏重，适合安静独白"},
+    {"name": "ono_anna", "label": "ono_anna · 高音女声", "desc": "音调偏高，偏动漫感"},
+    {"name": "uncle_fu", "label": "uncle_fu · 中年男声", "desc": "适合大叔语气与沉稳旁白"},
+    {"name": "ryan", "label": "ryan · 沉稳男声", "desc": "低音男声"},
+    {"name": "aiden", "label": "aiden · 年轻男声", "desc": "轻快男声"},
+    {"name": "dylan", "label": "dylan · 北京话男声", "desc": "自带北京方言"},
+    {"name": "eric", "label": "eric · 四川话男声", "desc": "自带四川方言"},
+)
+
+#: 子进程环境：剥掉宿主注入的 PYTHONPATH。
+#: 这台机器上 PYTHONPATH 指向的 shim 会劫持 sitecustomize，导致独立 venv 里的
+#: 解释器行为异常（pip 被劫持、包解析串味），跑外部工具前必须清掉。
+_SUBPROCESS_ENV = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+
+
+def _qwen3tts_paths() -> tuple[Path, Path]:
+    """定位 Qwen3-TTS 的独立解释器与推理脚本。"""
+    root = settings.repo_root
+    if settings.qwen3tts_python:
+        py = Path(settings.qwen3tts_python)
+    else:
+        py = root / "tools" / "qwen3-tts" / "venv" / (
+            "Scripts/python.exe" if IS_WINDOWS else "bin/python"
+        )
+    infer = Path(settings.qwen3tts_infer) if settings.qwen3tts_infer else (
+        root / "tools" / "qwen3-tts" / "infer.py"
+    )
+    return py, infer
+
+
+def qwen3tts_available() -> bool:
+    """Qwen3-TTS 是否可用（开关打开 + 解释器与脚本都在）。"""
+    if not settings.qwen3tts_enabled:
+        return False
+    py, infer = _qwen3tts_paths()
+    return py.exists() and infer.exists()
+
+
+def qwen3_tts_synthesize(*, text: str, out_path: str, speaker: str = "",
+                         instruct: str = "", device: str = "auto") -> str:
+    """合成一条情感配音，输出 mp3。
+
+    torch 依赖与后端隔离，统一以子进程调用 ``tools/qwen3-tts/infer.py``；
+    单条也走 jobs 批量接口，与 ``scripts/rebuild_voices.py`` 共用同一条代码路径。
+    """
+    if not text.strip():
+        raise EngineError("TTS 文本为空", retryable=False)
+    py, infer = _qwen3tts_paths()
+    if not py.exists():
+        raise EngineError(f"Qwen3-TTS 解释器不存在：{py}", retryable=False)
+    if not infer.exists():
+        raise EngineError(f"Qwen3-TTS 推理脚本不存在：{infer}", retryable=False)
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="qwen3tts_") as td:
+        wav = Path(td) / "out.wav"
+        jobs_path = Path(td) / "jobs.json"
+        jobs_path.write_text(json.dumps([{
+            "text": text,
+            "out": str(wav),
+            "speaker": speaker or settings.qwen3tts_speaker,
+            "instruct": instruct or "",
+        }], ensure_ascii=False), encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                [str(py), str(infer), "--jobs", str(jobs_path),
+                 "--device", device or settings.qwen3tts_device],
+                capture_output=True, text=True, env=_SUBPROCESS_ENV,
+                timeout=settings.qwen3tts_timeout, encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise EngineError(
+                f"Qwen3-TTS 合成超时（>{settings.qwen3tts_timeout}s）", detail=str(exc)
+            ) from exc
+        if proc.returncode != 0 or not wav.exists() or wav.stat().st_size == 0:
+            tail = ((proc.stderr or "") + (proc.stdout or ""))[-800:]
+            raise EngineError("Qwen3-TTS 合成失败", detail=tail)
+        run_ffmpeg(
+            ["-y", "-v", "error", "-i", str(wav), "-c:a", "libmp3lame",
+             "-b:a", "192k", "-ar", "44100", "-ac", "2", str(out)],
+            label="配音转码",
+        )
+    return str(out)
+
+
+def _bgm_paths() -> tuple[Path, Path]:
+    """定位 BGM 合成脚本与它需要的解释器（默认复用 Qwen3-TTS 的 venv）。"""
+    root = settings.repo_root
+    script = Path(settings.bgm_script) if settings.bgm_script else root / "scripts" / "gen_bgm.py"
+    if settings.bgm_python:
+        py = Path(settings.bgm_python)
+    else:
+        py = _qwen3tts_paths()[0]
+    return script, py
+
+
+def bgm_synth_available() -> bool:
+    script, py = _bgm_paths()
+    return script.exists() and py.exists()
+
+
+def synth_bgm(*, out_path: str, duration: float = 30.0, style: str = "pop",
+              peak_db: float = -9.0) -> str:
+    """用 ``scripts/gen_bgm.py`` 合成配乐（和弦分解 + 鼓组/贝斯/拨弦，非正弦垫音）。
+
+    峰值默认 -9dBFS：合成阶段 BGM 还会被乘 0.16（约 -16dB），
+    这样混出来大约比人声低 10dB，是标准的背景乐位置。
+    """
+    script, py = _bgm_paths()
+    if not script.exists():
+        raise EngineError(f"BGM 合成脚本不存在：{script}", retryable=False)
+    if not py.exists():
+        raise EngineError(f"BGM 合成解释器不存在：{py}", retryable=False)
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            [str(py), str(script), "--out", str(out), "--duration", f"{duration:.2f}",
+             "--style", style or "pop", "--peak-db", str(peak_db)],
+            capture_output=True, text=True, env=_SUBPROCESS_ENV,
+            timeout=900, encoding="utf-8", errors="replace",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EngineError("BGM 合成超时", detail=str(exc)) from exc
+    if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+        tail = ((proc.stderr or "") + (proc.stdout or ""))[-800:]
+        raise EngineError("BGM 合成失败", detail=tail)
+    return str(out)
+
+
 
 _MOOD_SCALES = {
     "calm": (261.63, 329.63, 392.00, 440.00),

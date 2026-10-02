@@ -90,7 +90,10 @@ class LocalStorage(StorageBackend):
         return False
 
     def url_for(self, rel_path: str) -> str:
-        return f"{self.public_base_url}/media/{rel_path.replace(' ', '%20')}"
+        # 调用方常传 Windows 反斜杠路径（Path 拼出来的），URL 必须是正斜杠，
+        # 否则下载文件名、复制出去的链接都会带上 `\`。
+        rel = str(rel_path).replace("\\", "/").lstrip("/")
+        return f"{self.public_base_url}/media/{rel.replace(' ', '%20')}"
 
     def abs_path(self, rel_path: str) -> Path:
         return (self.root / rel_path).resolve()

@@ -316,7 +316,7 @@ export default function SeriesDetail() {
       </Stack>
 
       {characters.length === 0 ? (
-        <Paper sx={{ py: 5, textAlign: 'center', border: '1px dashed rgba(26,23,38,0.12)' }}>
+        <Paper sx={{ py: 5, textAlign: 'center', border: '1px dashed', borderColor: 'divider' }}>
           <PersonOutlineIcon sx={{ fontSize: 38, color: 'primary.light', mb: 0.6 }} />
           <Typography variant="body2" color="text.secondary">
             还没有系列级角色

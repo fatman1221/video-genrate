@@ -97,6 +97,32 @@ class Settings(BaseSettings):
     # 留空则探测 tools/cosyvoice/ 下的默认入口
     cosyvoice_tts_cmd: str = ""
 
+    # ---- Qwen3-TTS（阿里开源，本地 1.7B CustomVoice，支持情感指令与多音色）----
+    # torch 依赖重且与后端隔离，一律走 tools/qwen3-tts/venv 的子进程调用。
+    qwen3tts_enabled: bool = True
+    # 留空则自动探测 tools/qwen3-tts/venv/Scripts/python.exe（POSIX 下为 bin/python）
+    qwen3tts_python: str = ""
+    # 留空则自动探测 tools/qwen3-tts/infer.py
+    qwen3tts_infer: str = ""
+    qwen3tts_model: str = "Qwen3-TTS-12Hz-1.7B-CustomVoice"
+    #: 默认音色；可用音色见 providers/audio_providers.py: QWEN3_SPEAKERS
+    qwen3tts_speaker: str = "sohee"
+    #: auto / cuda:0 / cpu
+    qwen3tts_device: str = "auto"
+    #: 单条配音合成超时（秒）。首次调用含加载 3.5G 权重，给足时间。
+    qwen3tts_timeout: int = 1200
+
+    # ---- 背景音乐合成器（numpy 合成，复用 Qwen3-TTS 的 venv 以省去一份 torch/numpy）----
+    # 留空则自动探测 scripts/gen_bgm.py
+    bgm_script: str = ""
+    #: 留空则沿用 qwen3tts_python
+    bgm_python: str = ""
+
+    @property
+    def repo_root(self) -> Path:
+        """工程根目录（backend/ 的上一级）。"""
+        return BACKEND_DIR.parent
+
     # ---- 行为开关 ----
     auto_advance_workflow: bool = True
     simulate_latency: bool = False

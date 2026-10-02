@@ -390,15 +390,18 @@ def get_asset_center(ctx: SkillContext, *, project_id: str | None = None,
     input_schema={"type": "object", "properties": {
         "text": {"type": "string", "description": "要合成的文本"},
         "voice": {"type": "string", "description": "音色名，留空用默认音色"},
+        "speaker": {"type": "string", "description": "Qwen3-TTS 音色名（sohee / vivian ...），优先于 voice"},
+        "instruct": {"type": "string", "description": "情感指令（自然语言，控制语气/情绪）；仅 qwen3tts 生效"},
         "rate": {"type": "integer", "description": "语速，留空用默认"},
         "name": {"type": "string", "description": "素材名，留空自动截取文本生成"},
-        "provider": {"type": "string", "description": "tts 引擎（local / cloud），留空用当前默认"},
+        "provider": {"type": "string", "description": "tts 引擎（qwen3tts / local / cloud），留空用当前默认"},
         "project_id": {"type": "string", "description": "可选：把素材归属到某个项目"}},
         "required": ["text"]},
 )
 def generate_standalone_voice(ctx: SkillContext, *, text: str, voice: str = "", rate: int = 0,
                               name: str = "", provider: str | None = None,
-                              project_id: str | None = None) -> dict[str, Any]:
+                              project_id: str | None = None,
+                              speaker: str = "", instruct: str = "") -> dict[str, Any]:
     if not text.strip():
         raise SkillError("文本为空，无法合成语音", code="BAD_INPUT")
     register_all()
@@ -407,11 +410,20 @@ def generate_standalone_voice(ctx: SkillContext, *, text: str, voice: str = "", 
     except Exception as exc:  # noqa: BLE001
         raise SkillError(f"未找到可用的 TTS 引擎：{exc}", code="NOT_FOUND") from exc
 
-    result = tts.synthesize(text=text, voice=voice, rate=int(rate or 0))
+    # 音色与情感指令走 parameters 透传：Qwen3-TTS 读 speaker/instruct，
+    # 其它引擎不认识这两个键，会原样记进素材参数里，不影响合成。
+    params: dict[str, Any] = {}
+    if speaker:
+        params["speaker"] = speaker
+    if instruct:
+        params["instruct"] = instruct
+    result = tts.synthesize(text=text, voice=voice or speaker, rate=int(rate or 0),
+                            parameters=params or None)
     asset = assets_svc.ingest_result(
         ctx.db, project_id=project_id, result=result, asset_type=AssetType.VOICE,
         name=name or f"语音 {text.strip()[:14]}",
-        extra={"role": "standalone_voice", "voice": voice or "(默认)", "text": text},
+        extra={"role": "standalone_voice", "voice": voice or speaker or "(默认)",
+               "speaker": speaker, "instruct": instruct, "text": text},
     )
     ctx.log(f"独立语音已生成并入库：{asset.id}（{result.duration:.1f}s / {result.provider}）")
     return {

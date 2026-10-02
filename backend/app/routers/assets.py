@@ -59,6 +59,10 @@ def generate_voice_asset(payload: dict[str, Any] = Body(default_factory=dict),
         "rate": int(payload.get("rate") or 0),
         "name": str(payload.get("name") or ""),
     }
+    # 音色 / 情感指令：调音台试音与素材中心都要用（只有 qwen3tts 认识，其它引擎忽略）
+    for key in ("speaker", "instruct"):
+        if payload.get(key):
+            args[key] = str(payload[key])
     if payload.get("provider"):
         args["provider"] = str(payload["provider"])
     if payload.get("project_id"):

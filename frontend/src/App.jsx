@@ -1,7 +1,9 @@
-import { AppBar, Box, CssBaseline, IconButton, Link, Stack, Toolbar, Tooltip, Typography } from '@mui/material'
+import { AppBar, Box, IconButton, Link, Stack, Toolbar, Tooltip, Typography } from '@mui/material'
 import MovieFilterIcon from '@mui/icons-material/MovieFilter'
 import TerminalOutlinedIcon from '@mui/icons-material/TerminalOutlined'
 import MenuBookOutlinedIcon from '@mui/icons-material/MenuBookOutlined'
+import Brightness4Icon from '@mui/icons-material/Brightness4'
+import Brightness7Icon from '@mui/icons-material/Brightness7'
 import { Link as RouterLink, NavLink, Route, Routes } from 'react-router-dom'
 import ProjectList from './pages/ProjectList'
 import ProjectDetail from './pages/ProjectDetail'
@@ -9,6 +11,7 @@ import SeriesList from './pages/SeriesList'
 import SeriesDetail from './pages/SeriesDetail'
 import AssetCenter from './pages/AssetCenter'
 import Settings from './pages/Settings'
+import { useThemeMode } from './ThemeModeProvider'
 import { useApi } from './api'
 
 function NavItem({ to, label }) {
@@ -26,7 +29,7 @@ function NavItem({ to, label }) {
         textDecoration: 'none',
         color: 'text.secondary',
         transition: 'all .15s',
-        '&.active': { color: 'primary.main', bgcolor: 'rgba(109,74,255,0.08)' },
+        '&.active': { color: 'primary.main', bgcolor: 'action.selected' },
         '&:hover': { color: 'text.primary' },
       }}
     >
@@ -37,18 +40,19 @@ function NavItem({ to, label }) {
 
 export default function App() {
   const { data } = useApi('/api/health', null, { poll: 20000 })
+  const { mode, toggle } = useThemeMode()
   const ok = data?.status === 'ok'
+  const dark = mode === 'dark'
 
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-      <CssBaseline />
       <AppBar position="sticky">
         <Toolbar sx={{ gap: 1.3, minHeight: 58 }}>
           <Box
             sx={{
               width: 30, height: 30, borderRadius: 9, bgcolor: 'primary.main', color: '#fff',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 6px 16px -8px rgba(109,74,255,0.9)',
+              boxShadow: `0 6px 16px -8px ${dark ? 'rgba(155,130,255,0.9)' : 'rgba(109,74,255,0.9)'}`,
             }}
           >
             <MovieFilterIcon sx={{ fontSize: 17 }} />
@@ -77,8 +81,8 @@ export default function App() {
             <Box
               sx={{
                 display: 'flex', alignItems: 'center', gap: 0.7, px: 1.2, py: 0.5,
-                borderRadius: 999, border: '1px solid rgba(26,23,38,0.07)',
-                bgcolor: 'rgba(26,23,38,0.02)',
+                borderRadius: 999, border: '1px solid', borderColor: 'divider',
+                bgcolor: 'action.hover',
               }}
             >
               <Box
@@ -102,6 +106,11 @@ export default function App() {
           <Tooltip title="API 文档">
             <IconButton size="small" href="/docs" target="_blank">
               <MenuBookOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={dark ? '切换到浅色模式' : '切换到深色模式'}>
+            <IconButton size="small" onClick={toggle}>
+              {dark ? <Brightness7Icon fontSize="small" /> : <Brightness4Icon fontSize="small" />}
             </IconButton>
           </Tooltip>
         </Toolbar>

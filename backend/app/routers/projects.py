@@ -1,6 +1,7 @@
 """项目相关 REST 端点（读为主，写操作统一走 Skill 层）。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -14,6 +15,7 @@ from ..services import agent_log, projects as projects_svc, quality as quality_s
 from ..services import pipeline as pipeline_svc
 from ..services import serializers as S, tasks as tasks_svc, workflow as workflow_svc
 from ..skills import invoke_skill
+from ..storage import get_storage
 
 router = APIRouter(prefix="/api", tags=["projects"])
 
@@ -112,6 +114,48 @@ def project_pipeline(project_id: str, db: Session = Depends(get_db)) -> dict[str
 def project_quality(project_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     report = quality_svc.latest_run(db, project_id)
     return {"report": report}
+
+
+@router.get("/projects/{project_id}/outputs")
+def project_outputs(project_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """列出该项目历史上产出的所有成片，供「版本对比」使用。
+
+    每次合成都会在 ``storage/outputs/{project_id}/`` 落一个新文件，
+    因此这里直接扫目录即可拿到全部版本；当前生效的那一版用 ``overview.final_output``
+    的 URL 做匹配并标记 ``is_current``。
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    storage = get_storage()
+    rel_dir = f"outputs/{project_id}"
+    abs_dir = storage.abs_path(rel_dir)
+    # 当前生效的成片（DB 里的 PROJECT_OUTPUT 资产），用于给列表打 is_current 标记。
+    # 注意：资产 URL 在 Windows 上可能是反斜杠形式，比较前统一成正斜杠。
+    current_asset = projects_svc.final_output_asset(db, project_id)
+    current_url = (current_asset.url if current_asset else "") or ""
+    current_norm = current_url.replace("\\", "/")
+
+    items: list[dict[str, Any]] = []
+    if abs_dir.is_dir():
+        for path in abs_dir.iterdir():
+            if not path.is_file() or path.suffix.lower() not in {".mp4", ".mov", ".mkv", ".webm"}:
+                continue
+            stat = path.stat()
+            url = storage.url_for(f"{rel_dir}/{path.name}")
+            items.append({
+                "name": path.name,
+                "url": url,
+                "is_current": bool(current_norm) and current_norm.endswith("/" + path.name),
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
+                "mtime": stat.st_mtime,
+            })
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    for item in items:
+        item.pop("mtime", None)
+    return {"items": items, "total": len(items), "current_url": current_norm}
 
 
 @router.get("/projects/{project_id}/logs")
