@@ -19,12 +19,17 @@
 #
 # --------------------------------------------------------------------------- #
 # 注意 1：WorkBuddy/CodeBuddy 注入的 PYTHONPATH shim 会劫持 os.mkdir，
-#        导致 uvicorn 启动即失败，因此必须 env -u PYTHONPATH。
-#        在普通终端里该变量不存在，env -u 是空操作，可安全保留。
+#        导致 uvicorn 启动即失败，因此必须摘掉 PYTHONPATH。
+#        ⚠️ 这里绝不能用 `env -u PYTHONPATH`：本机 PATH 上存在
+#           ~/.local/bin/env —— 一个同名 shim 脚本（只做 PATH 前插，不转发参数、
+#           不执行命令），会把真正的 /usr/bin/env 遮蔽掉。后果是
+#           `env -u XXX cmd` 静默成功退出(exit 0)、命令根本没跑，
+#           表现为「后端启动后 0.3 秒就退出且无任何日志」。
+#           正确做法是在子 shell 里 unset，见下方 subshell。
 # 注意 2：WorkBuddy/CodeBuddy 还会通过 NODE_OPTIONS 注入 node-language-shim.cjs，
 #        其中的 safe-delete 拦截「单轮删除 >50 个文件」。Vite 在依赖配置变化时会
 #        清空整个 node_modules/.vite（数百文件）→ 被拦截 → dev server 当场退出。
-#        对策：启动 vite 时 env -u NODE_OPTIONS 彻底摘掉该 shim。
+#        对策：启动 vite 前 unset NODE_OPTIONS 彻底摘掉该 shim。
 # 注意 3：启动前主动清掉 .vite 缓存，避免踩上注意 2 的删除拦截。
 #        ⚠️ 新增 MUI 图标时必须同步登记到 vite.config.js 的 MUI_ICONS，
 #           否则首次引用会触发重新预构建，同样撞上删除保护。
@@ -124,7 +129,8 @@ echo
 echo "启动后端 http://127.0.0.1:${BACKEND_PORT} ..."
 (
   cd "$ROOT/backend"
-  env -u PYTHONPATH "$PY" -m uvicorn app.main:app \
+  unset PYTHONPATH          # 见「注意 1」：不要用 env -u
+  exec "$PY" -m uvicorn app.main:app \
     --host 127.0.0.1 --port "$BACKEND_PORT" --log-level info
 ) &
 BACKEND_PID=$!
@@ -132,8 +138,10 @@ BACKEND_PID=$!
 echo "启动前端 http://127.0.0.1:${FRONTEND_PORT} ..."
 (
   cd "$ROOT/frontend"
-  rm -rf node_modules/.vite   # 避免触发 Node 批量删除保护
-  env -u NODE_OPTIONS PATH="${NODE_BIN_DIR}:$PATH" ./node_modules/.bin/vite \
+  unset NODE_OPTIONS        # 见「注意 2」：不要用 env -u
+  export PATH="${NODE_BIN_DIR}:$PATH"
+  rm -rf node_modules/.vite # 避免触发 Node 批量删除保护
+  exec ./node_modules/.bin/vite \
     --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort
 ) &
 FRONTEND_PID=$!

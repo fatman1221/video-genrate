@@ -40,11 +40,15 @@ def _shot(db, shot_id: str) -> Shot:
         "project_id": {"type": "string"}, "shot_id": {"type": "string"},
         "provider": {"type": "string", "description": "local / comfyui / cloud"},
         "prompt": {"type": "string", "description": "覆盖镜头自带的 image_prompt"},
+        "workflow_name": {"type": "string",
+                          "description": "ComfyUI 工作流模板名（如 qwen_image_scene）。provider=comfyui 时使用"},
+        "workflow_json": {"type": "object", "description": "直接传入 API 格式工作流，优先于 workflow_name"},
         "width": {"type": "integer"}, "height": {"type": "integer"}, "seed": {"type": "integer"}},
         "required": ["shot_id"]},
 )
 def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = None,
                    provider: str | None = None, prompt: str | None = None,
+                   workflow_name: str | None = None, workflow_json: dict[str, Any] | None = None,
                    width: int | None = None, height: int | None = None,
                    seed: int | None = None):
     shot = _shot(ctx.db, shot_id)
@@ -53,7 +57,8 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
     return tasks_svc.create_task(
         ctx.db, project_id=project_id or shot.project_id, type=TaskType.GENERATE_IMAGE,
         name=f"生成关键帧 {shot.code}", shot_id=shot.id,
-        payload={"provider": provider, "seed": seed, "width": width, "height": height},
+        payload={"provider": provider, "seed": seed, "width": width, "height": height,
+                 "workflow_name": workflow_name, "workflow_json": workflow_json},
         created_by=ctx.actor, commit=False,
     )
 
@@ -65,11 +70,15 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
     input_schema={"type": "object", "properties": {
         "shot_id": {"type": "string"}, "provider": {"type": "string"},
         "prompt": {"type": "string"}, "seed": {"type": "integer"},
+        "workflow_name": {"type": "string"},
+        "workflow_json": {"type": "object"},
         "keep_old": {"type": "boolean", "default": True}},
         "required": ["shot_id"]},
 )
 def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = None,
                      prompt: str | None = None, seed: int | None = None,
+                     workflow_name: str | None = None,
+                     workflow_json: dict[str, Any] | None = None,
                      keep_old: bool = True):
     shot = _shot(ctx.db, shot_id)
     if prompt:
@@ -80,7 +89,8 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
     return tasks_svc.create_task(
         ctx.db, project_id=shot.project_id, type=TaskType.GENERATE_IMAGE,
         name=f"重生成关键帧 {shot.code}", shot_id=shot.id,
-        payload={"provider": provider, "seed": seed, "regenerate": True, "keep_old": keep_old},
+        payload={"provider": provider, "seed": seed, "regenerate": True, "keep_old": keep_old,
+                 "workflow_name": workflow_name, "workflow_json": workflow_json},
         created_by=ctx.actor, commit=False,
     )
 
@@ -234,10 +244,16 @@ def get_video_generation_status(ctx: SkillContext, *, task_id: str | None = None
     tags=("image", "batch"),
     input_schema={"type": "object", "properties": {
         "project_id": {"type": "string"}, "provider": {"type": "string"},
-        "only_missing": {"type": "boolean", "default": True}}, "required": ["project_id"]},
+        "workflow_name": {"type": "string", "description": "ComfyUI 工作流模板名，如 qwen_image_scene"},
+        "concurrency": {"type": "integer", "default": 1,
+                        "description": "并发数。本地 ComfyUI 串行更稳，建议 1"},
+        "only_missing": {"type": "boolean", "default": True},
+        "force": {"type": "boolean", "default": False,
+                  "description": "True 时忽略已有关键帧强制重生成（切换工作流后全量重跑）"}}, "required": ["project_id"]},
 )
 def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | None = None,
-                        only_missing: bool = True) -> dict[str, Any]:
+                        workflow_name: str | None = None, concurrency: int = 1,
+                        only_missing: bool = True, force: bool = False) -> dict[str, Any]:
     _project(ctx.db, project_id)
     shots = projects_svc.pending_shots(ctx.db, project_id, kind="image") if only_missing else \
         list(ctx.db.execute(select(Shot).where(Shot.project_id == project_id)).scalars())
@@ -251,13 +267,30 @@ def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | N
     for shot in shots:
         task = tasks_svc.create_task(
             ctx.db, project_id=project_id, type=TaskType.GENERATE_IMAGE,
-            name=f"生成关键帧 {shot.code}", shot_id=shot.id, payload={"provider": provider},
+            name=f"生成关键帧 {shot.code}", shot_id=shot.id,
+            payload={"provider": provider, "workflow_name": workflow_name, "force": force},
             parent_task_id=parent.id, created_by=ctx.actor, commit=False,
         )
         ids.append(task.id)
     ctx.db.commit()
     return {"batch_task_id": parent.id, "task_ids": ids, "count": len(ids),
             "message": f"已提交 {len(ids)} 个关键帧任务"}
+
+
+@skill(
+    name="list_image_workflows", category="image",
+    description="列出可用的 ComfyUI 工作流模板（含用到的模型文件名，便于排查模型是否已下载）。",
+    tags=("image", "comfyui", "read"),
+    input_schema={"type": "object", "properties": {"kind": {"type": "string",
+                  "description": "image / video，不传则列出全部"}}},
+)
+def list_image_workflows(ctx: SkillContext, *, kind: str | None = None) -> dict[str, Any]:
+    from ..workflows import list_templates
+
+    items = [t.to_meta() for t in list_templates(kind)]
+    return {"templates": items, "count": len(items),
+            "note": "用 workflow_name 指定模板；模板文件放 backend/app/workflows/templates/"} 
+
 
 
 @skill(
@@ -510,3 +543,64 @@ def retry_failed_tasks(ctx: SkillContext, *, project_id: str) -> dict[str, Any]:
         if ok:
             requeued.append(task.id)
     return {"requeued": requeued, "count": len(requeued)}
+
+
+# --------------------------------------------------------------------------- #
+# ComfyUI 出图配置（项目级）
+# --------------------------------------------------------------------------- #
+@skill(
+    name="set_image_provider", category="image",
+    description=(
+        "为项目固化出图配置：把图片 Provider 与 ComfyUI 工作流模板写到项目上，"
+        "之后该项目所有关键帧 / 角色参考图都自动使用，无需每次传参。"
+        "典型用法：切到本地 ComfyUI + Qwen-Image 出人物图与场景图。"
+    ),
+    tags=("image", "comfyui", "config", "write"),
+    input_schema={"type": "object", "properties": {
+        "project_id": {"type": "string"},
+        "image_provider": {"type": "string", "description": "local / comfyui / cloud"},
+        "scene_workflow_name": {"type": "string", "description": "场景图工作流模板名"},
+        "character_workflow_name": {"type": "string", "description": "人物图工作流模板名"},
+        "video_provider": {"type": "string", "description": "镜头视频 Provider：local / comfyui / cloud"},
+        "video_workflow_name": {"type": "string", "description": "镜头视频工作流模板名（如 minimax_h3_i2v）"},
+        "scene_prompt_prefix": {"type": "string", "description": "场景图 prompt 统一前缀（画风锚定）"},
+        "character_prompt_prefix": {"type": "string", "description": "人物图 prompt 统一前缀"},
+        "negative_prompt": {"type": "string", "description": "统一负向词"},
+    }, "required": ["project_id"]},
+)
+def set_image_provider(ctx: SkillContext, *, project_id: str, image_provider: str | None = None,
+                       scene_workflow_name: str | None = None,
+                       character_workflow_name: str | None = None,
+                       video_provider: str | None = None,
+                       video_workflow_name: str | None = None,
+                       scene_prompt_prefix: str | None = None,
+                       character_prompt_prefix: str | None = None,
+                       negative_prompt: str | None = None) -> dict[str, Any]:
+    project = _project(ctx.db, project_id)
+
+    # 校验模板名，避免写进去一个拼错的名字、跑到出图时才发现
+    if scene_workflow_name or character_workflow_name or video_workflow_name:
+        from ..workflows import has_template
+
+        for label, name in (("scene_workflow_name", scene_workflow_name),
+                            ("character_workflow_name", character_workflow_name),
+                            ("video_workflow_name", video_workflow_name)):
+            if name and not has_template(name):
+                raise SkillError(f"工作流模板不存在：{name}（{label}）", code="BAD_INPUT")
+
+    extra = dict(project.extra or {})
+    changes: dict[str, Any] = {}
+    for key, value in (("image_provider", image_provider),
+                       ("scene_workflow_name", scene_workflow_name),
+                       ("character_workflow_name", character_workflow_name),
+                       ("video_provider", video_provider),
+                       ("video_workflow_name", video_workflow_name),
+                       ("scene_prompt_prefix", scene_prompt_prefix),
+                       ("character_prompt_prefix", character_prompt_prefix),
+                       ("negative_prompt", negative_prompt)):
+        if value is not None:
+            extra[key] = value
+            changes[key] = value
+    project.extra = extra
+    ctx.db.commit()
+    return {"project_id": project_id, "image_config": extra, "changed": changes}

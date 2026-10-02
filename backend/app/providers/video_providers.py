@@ -17,7 +17,13 @@ from ..config import settings
 from .base import GenerationResult, ProviderError, VideoProvider, registry
 from . import local_engine as engine
 from . import runtime
-from .image_providers import LocalImageProvider, _http_alive, _substitute
+from .image_providers import (
+    LocalImageProvider,
+    _http_alive,
+    _humanize_comfy_error,
+    _resolve_workflow,
+    _substitute,
+)
 
 _MOTION_KEYWORDS = (
     (("推近", "zoom in", "特写", "close-up"), "zoom_in"),
@@ -115,25 +121,93 @@ class ComfyUIVideoProvider(VideoProvider):
     def functional(self) -> bool:  # type: ignore[override]
         return bool(self.base_url) and _http_alive(f"{self.base_url}/system_stats")
 
+    def _upload_input_image(self, client: "httpx.Client", image_path: str,
+                            headers: dict[str, str]) -> str:
+        """把本地关键帧上传到 ComfyUI input 目录，返回 LoadImage 可用的文件名。
+
+        ComfyUI 的 LoadImage 只认 input 目录里的相对文件名，绝对路径会直接报错。
+        """
+        p = Path(image_path)
+        # multipart 上传不能带 JSON Content-Type，否则请求体被污染 → 400
+        upload_headers = {k: v for k, v in headers.items()
+                          if k.lower() != "content-type"}
+        resp = client.post(
+            f"{self.base_url}/upload/image",
+            files={"image": (p.name, p.read_bytes(), "image/png")},
+            data={"overwrite": "true", "type": "input"},
+            headers=upload_headers,
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"关键帧上传失败: {resp.status_code}", detail=resp.text[:500])
+        info = resp.json()
+        name = info.get("name") or p.name
+        sub = info.get("subfolder") or ""
+        return f"{sub}/{name}" if sub else name
+
+    def _conform_video(self, src: Path, *, width: int, height: int, fps: int,
+                       duration: float, workdir: Path) -> Path:
+        """把 ComfyUI 产物校准到镜头要求的尺寸与时长。
+
+        - 帧网格对齐（17k+5）会让片段比目标略长 → 截断；
+        - 帧数被 max_frames 钳制后片段偏短 → setpts 减速补齐（运镜更慢，但内容完整）；
+        - 模板用原生分辨率（1376x768）→ 缩放到项目尺寸；
+        - 顺手去掉源音轨（成片的配音/配乐由 compose 阶段统一混入）。
+        """
+        info = engine.ffprobe(src)
+        actual = float(info.get("duration") or 0)
+        w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+        need_scale = (w, h) != (width, height) and w and h
+        need_time = actual and abs(actual - duration) > 0.25
+
+        if not need_scale and not need_time:
+            return src
+
+        out = workdir / f"conform_{src.stem}.mp4"
+        vf = f"scale={width}:{height}" if need_scale else None
+        cmd: list[str] = ["-y", "-i", str(src)]
+        if need_time and actual < duration:
+            # 偏短：整体减速补齐，再以目标时长兜底截断
+            factor = duration / actual
+            cmd += ["-vf", f"{vf},setpts=PTS*{factor:.6f}" if vf else f"setpts=PTS*{factor:.6f}"]
+        elif vf:
+            cmd += ["-vf", vf]
+        cmd += ["-an", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                "-r", str(int(fps) if fps else 24)]
+        if need_time:
+            cmd += ["-t", f"{duration:.3f}"]
+        cmd += [str(out)]
+        engine.run_ffmpeg(cmd, label="校准镜头视频")
+        return out
+
     def generate(self, *, prompt: str, image_path: str | None = None,
                  width: int = 1280, height: int = 720, duration: float = 5.0,
                  fps: int = 24, seed: int | None = None,
                  parameters: dict[str, Any] | None = None,
                  progress_cb: Callable[[int, str], None] | None = None) -> GenerationResult:
         params = dict(parameters or {})
-        workflow = params.get("workflow_json")
-        if not workflow:
-            raise ProviderError(
-                "ComfyUIVideoProvider 需要 parameters.workflow_json（API 格式工作流）",
-                retryable=False,
-                detail="支持占位符 {{prompt}} / {{width}} / {{height}} / {{frames}} / {{seed}} / {{image}}。",
-            )
+        frames = int(duration * fps) if fps else 124
+
+        # 模板可声明 max_frames（如 MiniMax H3 训练范围 124~362）：
+        # 超长镜头先钳制生成，再由 _conform_video 减速补齐时长
+        max_frames = None
+        name = (params.get("workflow_name") or "").strip()
+        if name:
+            from ..workflows import get_template
+            try:
+                max_frames = get_template(name).max_frames
+            except Exception:  # noqa: BLE001 —— 模板缺失时让 _resolve_workflow 去报错
+                max_frames = None
+        if max_frames and frames > max_frames:
+            frames = int(max_frames)
+
         started = time.time()
-        frames = int(duration * fps)
-        resolved = _substitute(workflow, {
+        resolved = _resolve_workflow(params, prompt=prompt, negative_prompt="",
+                                     width=width, height=height, seed=seed)
+        # 注意：{{image}} 此处不能替换 —— 上传完成后用 input 目录里的相对文件名替换
+        resolved = _substitute(resolved, {
             "prompt": prompt, "width": width, "height": height,
             "frames": frames, "seed": seed or int(time.time()) % 2**31,
-            "image": image_path or "",
         })
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -142,27 +216,56 @@ class ComfyUIVideoProvider(VideoProvider):
         workdir.mkdir(parents=True, exist_ok=True)
 
         with httpx.Client(timeout=30) as client:
+            image_ref = ""
+            if image_path and Path(image_path).exists():
+                if progress_cb:
+                    progress_cb(8, "上传关键帧到 ComfyUI")
+                image_ref = self._upload_input_image(client, image_path, headers)
+                resolved = _substitute(resolved, {"image": image_ref})
+
             resp = client.post(f"{self.base_url}/prompt", json={"prompt": resolved}, headers=headers)
             if resp.status_code >= 400:
-                raise ProviderError(f"ComfyUI 提交失败: {resp.status_code}", detail=resp.text[:800])
+                raise ProviderError(
+                    f"ComfyUI 提交失败: {resp.status_code}",
+                    detail=_humanize_comfy_error(resp.text)[:1500],
+                )
             prompt_id = resp.json().get("prompt_id")
             deadline = time.time() + float(params.get("timeout", 1800))
             outputs: dict[str, Any] = {}
+            run_error = ""
             while time.time() < deadline:
                 hist = client.get(f"{self.base_url}/history/{prompt_id}", headers=headers)
                 if hist.status_code == 200:
-                    outputs = (hist.json().get(prompt_id) or {}).get("outputs") or {}
-                    if any(v.get("gifs") or v.get("videos") for v in outputs.values()):
+                    entry = hist.json().get(prompt_id) or {}
+                    outputs = entry.get("outputs") or {}
+                    if any(v.get("gifs") or v.get("videos") or v.get("animated")
+                           for v in outputs.values()):
+                        break
+                    st = entry.get("status") or {}
+                    if st.get("status_str") == "error":
+                        run_error = str(st.get("messages") or "")[:1200]
                         break
                 if progress_cb:
-                    progress_cb(50, "等待 ComfyUI 视频任务")
+                    progress_cb(50, f"等待 ComfyUI 视频任务（目标 {frames} 帧）")
                 time.sleep(3)
             candidates: list[dict[str, Any]] = []
+            video_exts = {".mp4", ".webm", ".mov", ".mkv", ".gif"}
             for node in outputs.values():
                 candidates.extend(node.get("gifs") or [])
                 candidates.extend(node.get("videos") or [])
+                candidates.extend(node.get("animated") or [])
+                # SaveVideo（ComfyUI 原生）把 mp4 列在 images 键下，
+                # animated 只是 [true] 标志 —— 按扩展名甄别真正的视频文件
+                for item in node.get("images") or []:
+                    if Path(item.get("filename", "")).suffix.lower() in video_exts:
+                        candidates.append(item)
+            candidates = [c for c in candidates if isinstance(c, dict) and c.get("filename")]
             if not candidates:
-                raise ProviderError("ComfyUI 视频任务超时或无输出", retryable=True)
+                raise ProviderError(
+                    "ComfyUI 视频任务超时或无输出" + ("（执行出错）" if run_error else ""),
+                    retryable=True,
+                    detail=_humanize_comfy_error(run_error or str(outputs))[:900],
+                )
             first = candidates[0]
             resp2 = client.get(f"{self.base_url}/view", params={
                 "filename": first.get("filename", ""),
@@ -174,6 +277,8 @@ class ComfyUIVideoProvider(VideoProvider):
             out = workdir / f"comfy_{prompt_id}{ext}"
             out.write_bytes(resp2.content)
 
+        out = self._conform_video(out, width=width, height=height, fps=int(fps or 24),
+                                  duration=float(duration), workdir=workdir)
         info = engine.ffprobe(out)
         return GenerationResult(
             file_path=str(out), provider=self.name, model=params.get("ckpt_name", "comfyui-video"),
@@ -181,7 +286,7 @@ class ComfyUIVideoProvider(VideoProvider):
             width=info["width"] or width, height=info["height"] or height,
             duration=info["duration"] or duration, fps=info["fps"] or fps,
             format=out.suffix.lstrip("."), size_bytes=info["size_bytes"],
-            prompt=prompt, seed=seed, extra={"prompt_id": prompt_id},
+            prompt=prompt, seed=seed, extra={"prompt_id": prompt_id, "source_image": image_ref},
             elapsed_ms=int((time.time() - started) * 1000),
         )
 

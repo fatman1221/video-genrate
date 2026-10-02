@@ -31,13 +31,22 @@ WorkBuddy / Codex   ──思考、规划、决策、调用 Skill──►  本�
 > **换台电脑继续用**：见 [docs/MIGRATION.md](docs/MIGRATION.md) —— 传输方式、
 > 新机部署步骤、验收清单与故障速查。本工程自带 `local-postgres/docker-compose.yml`，
 > 不依赖任何外部 Postgres 实例。
+>
+> **本地 ComfyUI + Qwen-Image 出图**（2026-09-26 新增）：用本机 ComfyUI 的
+> Qwen-Image 2.1 生成**人物图（角色设定图）与场景图**，暂不生成视频。
+> 补了一层「工作流模板」机制 —— 把一大坨工作流 JSON 变成有名字的模板
+> （`workflow_name="qwen_image_character"`），并新增 `scripts/gen_images.py` 批量出图 CLI。
+> 一条命令自检：`python scripts/gen_images.py doctor`。
+> 详见 [docs/COMFYUI_QWEN.md](docs/COMFYUI_QWEN.md)。
+>
+> **Windows 启动**：`scripts\dev.cmd`（原 `dev.sh` 是 macOS/Linux 版，Windows 用 cmd）。
 
 核心原则（与需求一一对应）：
 
 | # | 原则 | 落地位置 |
 |---|------|----------|
 | 1 | Agent 负责思考，Backend 负责状态与执行 | `backend/app/skills`（契约）+ `executors`（执行） |
-| 2 | 业务逻辑不写死在 Prompt 里 | 全部能力抽象为 87 个 Skill，见 `/api/skills` |
+| 2 | 业务逻辑不写死在 Prompt 里 | 全部能力抽象为 89 个 Skill，见 `/api/skills` |
 | 3 | 每个 Skill 有清晰输入 / 输出 / 状态 / 错误 | `skills/base.py` JSON Schema 校验 + 统一返回结构 |
 | 4 | 所有生成任务可追踪 | `tasks` 表：payload / result / logs / attempts / error |
 | 5 | 素材与 Project / Scene / Shot 关联 | `assets` 表 + `Asset Center` API |
@@ -72,12 +81,15 @@ video-skill/
 │   │   │   ├── enhance_providers.py
 │   │   │   ├── processing_providers.py
 │   │   │   └── browser_providers.py
-│   │   ├── skills/                 ★ Agent 调用契约层（87 个 Skill）
+│   │   ├── skills/                 ★ Agent 调用契约层（89 个 Skill）
 │   │   │   ├── base.py             Skill / Registry / JSON Schema 校验
 │   │   │   ├── content_skills.py   Project / Script / Storyboard / Shot / Character
 │   │   │   ├── series_skills.py    连续剧：Series / Episode / 系列级角色
 │   │   │   ├── generation_skills.py Image / Video / Voice / Music / SFX / Subtitle / Task
 │   │   │   └── post_skills.py      处理 / 合成 / 质检 / 工作流 / 素材 / 日志 / Provider / 浏览器 / 编排
+│   │   ├── workflows/              ★ ComfyUI 工作流模板
+│   │   │   ├── __init__.py         模板发现 / 加载 / 占位符渲染
+│   │   │   └── templates/          qwen_image_character.json / qwen_image_scene.json
 │   │   ├── executors/              ★ 异步任务执行
 │   │   │   ├── queue.py            DB 即队列 + worker 池 + 重试 + 断点恢复
 │   │   │   └── handlers.py         20 类任务的真实执行逻辑
@@ -90,15 +102,20 @@ video-skill/
 │   └── src/{pages,components}      项目列表 / 项目详情 / 连续剧 / 素材中心 / 系统设置
 ├── scripts/
 │   ├── e2e_check.py                端到端链路验证脚本
+│   ├── gen_images.py               ★ ComfyUI + Qwen-Image 批量出图 CLI
+│   ├── dev.cmd                     Windows 一键启动（dev.sh 的 Windows 版）
 │   ├── build_intro.py              介绍页构建（截图裁切 + base64 内嵌）
 │   ├── shot_intro.sh               介绍页整页长截图（1.5x 像素密度）
-│   └── dev.sh                      一键启动后端 + 前端
+│   └── dev.sh                      一键启动后端 + 前端（macOS/Linux）
+├── examples/
+│   └── shots_example.json          ★ 批量出图的 json 示例
 ├── intro.html                      ★ 项目介绍页（单文件、零外部依赖、紫主题）
 ├── intro-full.png                  介绍页整页长截图（1920×9142）
 ├── local-postgres/
 │   └── docker-compose.yml          自带 PostgreSQL（不依赖外部实例）
 └── docs/
     ├── ARCHITECTURE.md             架构与扩展指南
+    ├── COMFYUI_QWEN.md             ★ 本地 ComfyUI + Qwen-Image 出图接入
     ├── VERIFICATION.md             验收记录
     ├── PIPELINE_NODES.md           节点流水线设计
     ├── SERIES.md                   连续剧分层结构
@@ -145,29 +162,71 @@ export DATABASE_URL="sqlite:///./video_agent_studio.db"
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 
-# 手工启动（dev.sh 会自动做这些）
+# 手工启动（dev.sh / dev.cmd 会自动做这些）
+# Windows: ../.venv/Scripts/python.exe
 cd backend
-env -u PYTHONPATH ../../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077
+unset PYTHONPATH
+../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077
 ```
 
-> `env -u PYTHONPATH` 是为了规避 WorkBuddy 宿主 shim 对 `os.mkdir` 的劫持；
-> 在你自己的普通终端里该变量不存在，去掉也无妨。
+> `unset PYTHONPATH` 是为了规避 WorkBuddy 宿主 shim 对 `os.mkdir` 的劫持；
+> 在你自己的普通终端里该变量不存在，这句是空操作、可安全保留。
+>
+> ⚠️ **不要写成 `env -u PYTHONPATH`**。部分机器 PATH 上存在
+> `~/.local/bin/env`（uv 安装器留下的 PATH 前插脚本），它会遮蔽真正的
+> `/usr/bin/env`，导致 `env -u XXX cmd` **静默退出(exit 0) 且不执行命令** ——
+> 表现为「后端启动后立刻退出、日志空白」。用 shell 内建的 `unset` 即可。
 
 ### 3. 前端依赖与启动
 
 ```bash
 cd frontend && npm install && cd ..
 
-# 手工启动（dev.sh 会自动做这些）
-cd frontend && env -u NODE_OPTIONS ./node_modules/.bin/vite --host 127.0.0.1 --port 5180
+# 手工启动（dev.sh / dev.cmd web 会自动做这些）
+# Windows: scripts\dev.cmd web
+cd frontend
+unset NODE_OPTIONS
+./node_modules/.bin/vite --host 127.0.0.1 --port 5180 --strictPort
 # http://127.0.0.1:5180
 ```
+
+> `unset NODE_OPTIONS` 是为了摘掉宿主注入的 node shim（它的批量删除保护会让
+> Vite 清理缓存时被拦截、dev server 当场退出）。同理不要写 `env -u`。
 
 ### 4. 一句话验证整条链路
 
 ```bash
 python scripts/e2e_check.py 20 5   # 20 秒成片 / 单镜头 5 秒
 ```
+
+### 5. 本地 ComfyUI + Qwen-Image 出图（人物图 / 场景图）
+
+前置：本机 ComfyUI 已在 `127.0.0.1:8188` 运行，且已下载 Qwen-Image 2.1 相关模型。
+
+```bash
+# 自检：后端 / ComfyUI / 工作流模板 / Provider 四项
+python scripts/gen_images.py doctor
+
+# 建项目并固化出图配置（人物图、场景图各用哪个模板）
+python scripts/gen_images.py init --name "我的短剧" --style "写实电影感，自然光"
+
+# 人物图
+python scripts/gen_images.py character --project proj_xxxx \
+    --name "林知夏" --appearance "22岁女生，齐肩黑发，米色针织衫"
+
+# 场景图
+python scripts/gen_images.py scene --project proj_xxxx \
+    --title "图书馆清晨" --prompt "清晨的大学图书馆，阳光从高窗斜射，尘埃在光柱中漂浮"
+
+# 批量（json 清单见 examples/shots_example.json）
+python scripts/gen_images.py batch --project proj_xxxx --file examples/shots_example.json
+```
+
+> 工作流模板放在 `backend/app/workflows/templates/`，占位符写
+> `{{prompt}} / {{negative_prompt}} / {{width}} / {{height}} / {{seed}}`。
+> 换成自己的工作流只需替换这两个 json，无需改代码。
+> 详见 [docs/COMFYUI_QWEN.md](docs/COMFYUI_QWEN.md)。
+
 
 ---
 
@@ -257,8 +316,28 @@ Web UI 上就是**「系统设置」页**：为「生图模型 / 图生视频模
   **不会覆盖**用户的默认引擎、模型名与凭证
 - 云端 API Key 只以掩码（`••••1234`）回显，不返回明文
 
-接入 ComfyUI 只需在「系统设置」或 `backend/.env` 填 ComfyUI 地址，并在调用时传 `parameters.workflow_json`
-（API 格式工作流，支持 `{{prompt}} / {{width}} / {{height}} / {{frames}} / {{seed}} / {{image}}` 占位符）。
+### 接入 ComfyUI（出图 / 图生视频）
+
+在「系统设置」或 `backend/.env` 填 ComfyUI 地址即可，出图与图生视频推荐用**工作流模板**
+（`workflow_name`，模板放 `backend/app/workflows/templates/*.json`）。仓库已内置：
+
+| 模板 | 用途 |
+|---|---|
+| `qwen_image_scene` / `qwen_image_character` | Qwen-Image 2.1 出场景图 / 角色定妆图 |
+| `qwen_edit_scene` | Qwen-Image-Edit 2511「参考图 + 提示词」编辑，用于**角色一致性关键帧** |
+| `minimax_h3_i2v` | MiniMax H3 图生视频（本地关键帧 → 真运动镜头） |
+| `sdxl_ipadapter_scene` | SDXL + IPAdapter 备选（中文提示词理解较弱，保留） |
+
+模板占位符：`{{prompt}} / {{negative_prompt}} / {{width}} / {{height}} / {{seed}} / {{image}} / {{frames}}`。
+也可以用 `workflow_json` 直接传 API 格式工作流。详见 `docs/COMFYUI_QWEN.md`。
+
+> ⚠️ 注意：原版只支持 `workflow_json`，但 **没有任何 Skill 能把该参数透传下来**，
+> 导致 ComfyUI 通道在 API 上不可达。现已补上 `workflow_name` 模板机制，
+> 并让 `generate_image` / `generate_character_reference` / `generate_all_images`
+> 都支持透传。相关 Skill：
+>
+> - `list_image_workflows` —— 列出可用模板及其所需模型文件
+> - `set_image_provider` —— 把出图配置固化到项目（provider + 两个模板名 + prompt 前缀 + 负向词）
 
 ---
 

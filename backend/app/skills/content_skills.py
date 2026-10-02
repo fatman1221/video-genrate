@@ -731,20 +731,33 @@ def get_character(ctx: SkillContext, *, character_id: str | None = None,
 
 @skill(
     name="generate_character_reference", category="character", is_async=True,
-    description="为角色生成参考图（异步任务）。",
+    description="为角色生成参考图 / 人物设定图（异步任务）。provider=comfyui 时用 workflow_name 指定模板。",
     tags=("character", "generate"),
     input_schema={"type": "object", "properties": {
-        "character_id": {"type": "string"}, "provider": {"type": "string"}},
+        "character_id": {"type": "string"}, "provider": {"type": "string"},
+        "workflow_name": {"type": "string",
+                          "description": "ComfyUI 工作流模板名，默认 qwen_image_character"},
+        "workflow_json": {"type": "object", "description": "直接传入 API 格式工作流"},
+        "prompt": {"type": "string", "description": "覆盖角色自带 reference_prompt"},
+        "seed": {"type": "integer"}},
         "required": ["character_id"]},
 )
 def generate_character_reference(ctx: SkillContext, *, character_id: str,
-                                 provider: str | None = None):
+                                 provider: str | None = None,
+                                 workflow_name: str | None = None,
+                                 workflow_json: dict[str, Any] | None = None,
+                                 prompt: str | None = None,
+                                 seed: int | None = None):
     char = ctx.db.get(Character, character_id)
     if char is None:
         raise SkillError(f"角色不存在: {character_id}", code="NOT_FOUND")
+    if prompt:
+        char.reference_prompt = prompt
     host_project_id = _character_host_project_id(ctx.db, char)
     return tasks_svc.create_task(
         ctx.db, project_id=host_project_id, type=TaskType.GENERATE_CHARACTER_REFERENCE,
         name=f"生成角色参考图：{char.name}", character_id=char.id,
-        payload={"provider": provider}, created_by=ctx.actor, commit=False,
+        payload={"provider": provider, "workflow_name": workflow_name,
+                 "workflow_json": workflow_json, "seed": seed},
+        created_by=ctx.actor, commit=False,
     )

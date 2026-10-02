@@ -84,19 +84,37 @@ class ComfyUIImageProvider(ImageProvider):
     def functional(self) -> bool:  # type: ignore[override]
         return bool(self.base_url) and _http_alive(f"{self.base_url}/system_stats")
 
+    def _upload_input_image(self, client: "httpx.Client", image_path: str,
+                            headers: dict[str, str]) -> str:
+        """把本地参考图上传到 ComfyUI input 目录，返回 LoadImage 可用的相对文件名。"""
+        p = Path(image_path)
+        # multipart 上传不能带 JSON Content-Type，否则请求体被污染 → 400
+        upload_headers = {k: v for k, v in headers.items()
+                          if k.lower() != "content-type"}
+        resp = client.post(
+            f"{self.base_url}/upload/image",
+            files={"image": (p.name, p.read_bytes(), "image/png")},
+            data={"overwrite": "true", "type": "input"},
+            headers=upload_headers,
+        )
+        if resp.status_code >= 400:
+            raise ProviderError(
+                f"参考图上传失败: {resp.status_code}", detail=resp.text[:500])
+        info = resp.json()
+        name = info.get("name") or p.name
+        sub = info.get("subfolder") or ""
+        return f"{sub}/{name}" if sub else name
+
     def generate(self, *, prompt: str, negative_prompt: str = "", width: int = 1280,
                  height: int = 720, seed: int | None = None,
                  reference_image: str | None = None,
                  parameters: dict[str, Any] | None = None) -> GenerationResult:
         params = dict(parameters or {})
-        workflow = params.get("workflow_json")
-        if not workflow:
-            raise ProviderError(
-                "ComfyUIProvider 需要 parameters.workflow_json（导出的 API 格式工作流）",
-                retryable=False,
-                detail="可在 ComfyUI 中使用『Save (API Format)』导出，并把占位符写成 {{prompt}} / {{width}} / {{height}} / {{seed}}。",
-            )
+        workflow = _resolve_workflow(params, prompt=prompt, negative_prompt=negative_prompt,
+                                     width=width, height=height, seed=seed)
         started = time.time()
+        # {{reference_image}} 在上传后才能替换（需要 input 目录的相对文件名），
+        # 若最终仍未替换则清空占位符，避免 JSON 里留下非法字符串
         resolved = _substitute(workflow, {
             "prompt": prompt, "negative_prompt": negative_prompt,
             "width": width, "height": height, "seed": seed or int(time.time()) % 2**31,
@@ -106,13 +124,21 @@ class ComfyUIImageProvider(ImageProvider):
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         with httpx.Client(timeout=30) as client:
+            if reference_image and Path(reference_image).exists() and "{{reference_image}}" in json.dumps(resolved):
+                ref_name = self._upload_input_image(client, reference_image, headers)
+                resolved = _substitute(resolved, {"reference_image": ref_name})
+            else:
+                resolved = _substitute(resolved, {"reference_image": ""})
             resp = client.post(
                 f"{self.base_url}/prompt",
                 json={"prompt": resolved, "client_id": client_id},
                 headers=headers,
             )
             if resp.status_code >= 400:
-                raise ProviderError(f"ComfyUI 提交失败: {resp.status_code}", detail=resp.text[:800])
+                raise ProviderError(
+                    f"ComfyUI 提交失败: {resp.status_code}",
+                    detail=_humanize_comfy_error(resp.text)[:1500],
+                )
             prompt_id = resp.json().get("prompt_id")
             if not prompt_id:
                 raise ProviderError("ComfyUI 未返回 prompt_id", detail=resp.text[:400])
@@ -232,6 +258,75 @@ class CloudImageProvider(ImageProvider):
 
 
 _ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _resolve_workflow(params: dict[str, Any], *, prompt: str, negative_prompt: str,
+                      width: int, height: int, seed: int | None) -> dict[str, Any]:
+    """拿到本次要提交的工作流。
+
+    优先级：
+    1. `parameters.workflow_json` —— 调用方直接给的完整工作流（已渲染或含占位符）
+    2. `parameters.workflow_name` —— 模板名，走模板管理器渲染
+       （Skill 层只需说 `workflow_name="qwen_image_character"`）
+
+    两者都没有时抛出可读错误，并列出当前可用模板 —— 这是最常见的接入卡点，
+    错误信息必须直接告诉人怎么办，而不是只丢一句"缺少参数"。
+    """
+    inline = params.get("workflow_json")
+    if inline:
+        return inline
+
+    name = (params.get("workflow_name") or "").strip()
+    if not name:
+        from ..workflows import list_templates
+
+        available = ", ".join(t.key for t in list_templates()) or "<无内置模板>"
+        raise ProviderError(
+            "ComfyUI 出图需要 workflow_json 或 workflow_name 之一",
+            retryable=False,
+            detail=(
+                f"可用模板：{available}。"
+                "用法：调用 generate_image 时传 workflow_name=\"qwen_image_character\"，"
+                "或传 workflow_json=<API 格式工作流 dict>。"
+            ),
+        )
+
+    from ..workflows import WorkflowTemplateError, get_template
+
+    try:
+        template = get_template(name)
+    except WorkflowTemplateError as exc:
+        raise ProviderError(str(exc), retryable=False) from exc
+
+    return template.render(
+        prompt=prompt, negative_prompt=negative_prompt,
+        width=width, height=height, seed=seed or int(time.time()) % 2**31,
+    )
+
+
+def _humanize_comfy_error(body: str) -> str:
+    """把 ComfyUI 的 node_errors 原文压成一句能直接照做的提示。"""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return body
+    parts: list[str] = []
+    err = payload.get("error")
+    if isinstance(err, dict):
+        parts.append(f"{err.get('type', 'error')}: {err.get('message', '')}")
+    elif err:
+        parts.append(str(err))
+    node_errors = payload.get("node_errors") or {}
+    for node_id, info in node_errors.items():
+        if not isinstance(info, dict):
+            continue
+        cls = info.get("class_type", "?")
+        for e in info.get("errors") or []:
+            msg = e.get("message") or e.get("details") or str(e)
+            parts.append(f"节点 {node_id}({cls}): {msg}")
+    if not parts:
+        return body
+    return " | ".join(parts)
 
 
 def _http_alive(url: str, timeout: float = 1.5, ttl: float = 60.0) -> bool:

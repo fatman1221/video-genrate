@@ -18,6 +18,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import textwrap
 import threading
@@ -33,15 +34,39 @@ ProgressCb = Callable[[int, str], None] | None
 
 FFMPEG = settings.ffmpeg_bin
 FFPROBE = settings.ffprobe_bin
+
+IS_WINDOWS = sys.platform.startswith("win")
+IS_MACOS = sys.platform == "darwin"
+
+# macOS 用系统 say；Windows 没有 say，改走 CosyVoice / edge-tts / SAPI（见 say_tts）
 SAY = "/usr/bin/say"
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh") or ""
 
 _CJK_FONT_CANDIDATES = (
+    # ---- Windows ----
+    "C:/Windows/Fonts/msyh.ttc",       # 微软雅黑
+    "C:/Windows/Fonts/msyhbd.ttc",     # 雅黑粗体
+    "C:/Windows/Fonts/simhei.ttf",     # 黑体
+    "C:/Windows/Fonts/simsun.ttc",     # 宋体
+    "C:/Windows/Fonts/Deng.ttf",       # 等线
+    # ---- macOS ----
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Supplemental/Songti.ttc",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
+)
+
+# 烧字幕时 langass 需要的字体名（force_style 的 FontName）。
+# 不指定的话，libass 在 Windows 上常常找不到字体 → 中文渲染成方块或整条不显示。
+_SUBTITLE_FONT_CANDIDATES = (
+    "Microsoft YaHei",   # Windows 微软雅黑
+    "SimHei",            # Windows 黑体
+    "PingFang SC",       # macOS
+    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "Arial Unicode MS",
 )
 
 _FONT_CACHE: dict[int, Any] = {}
@@ -577,12 +602,28 @@ def build_voice_timeline(
 
 
 
+def subtitle_font_name() -> str:
+    """挑一个本机确实存在的中文字体名，交给 libass。
+
+    不给 FontName 时 libass 会自行找字体，Windows 上常找不到中文字形，
+    结果是字幕整条不显示或渲染成方块。
+    """
+    if IS_WINDOWS:
+        return "Microsoft YaHei"
+    if IS_MACOS:
+        return "PingFang SC"
+    for name in _SUBTITLE_FONT_CANDIDATES:
+        if name not in ("Microsoft YaHei", "SimHei", "PingFang SC", "Hiragino Sans GB"):
+            return name
+    return _SUBTITLE_FONT_CANDIDATES[0]
+
+
 def burn_subtitles(*, video_path: str, subtitle_path: str, out_path: str,
                    font_size: int = 22, progress_cb: ProgressCb = None) -> str:
     """烧录字幕（libass）。"""
     total = audio_duration(video_path)
     style = (
-        f"FontSize={font_size},PrimaryColour=&H00FFFFFF,"
+        f"FontName={subtitle_font_name()},FontSize={font_size},PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H96000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=28"
     )
     escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
@@ -663,18 +704,115 @@ def trim_video(*, video_path: str, out_path: str, start: float, end: float) -> s
 # --------------------------------------------------------------------------- #
 # 音频生成
 # --------------------------------------------------------------------------- #
-def list_voices() -> list[str]:
+def _run_coro(coro: Any) -> Any:
+    """在同步上下文里跑协程；若当前已有事件循环，则丢到独立线程执行。"""
+    import asyncio
+
     try:
-        out = subprocess.run([SAY, "-v", "?"], capture_output=True, text=True, timeout=20)
-        return [line.split()[0] for line in out.stdout.splitlines() if line.strip()]
-    except (OSError, subprocess.SubprocessError):
-        return []
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(coro)).result()
 
 
-def say_tts(*, text: str, out_path: str, voice: str = "", rate: int = 0) -> str:
-    """macOS say 本地 TTS，输出 aiff 再转 mp3/wav。"""
+def _edge_tts_available() -> bool:
+    try:
+        import edge_tts  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+_COSYVOICE_ENTRY: list[list[str] | None] = []
+
+
+def _cosyvoice_entry() -> list[str] | None:
+    """定位 CosyVoice 推理入口，返回命令前缀；找不到返回 None。
+
+    优先用 settings.cosyvoice_tts_cmd；否则探测仓库内 tools/cosyvoice/infer.py
+    （那目录自带独立 venv，避免把 torch 装进 Studio 的运行环境）。
+    """
+    if _COSYVOICE_ENTRY:
+        return _COSYVOICE_ENTRY[0]
+    entry: list[str] | None = None
+    if settings.cosyvoice_tts_cmd:
+        entry = settings.cosyvoice_tts_cmd.split()
+    else:
+        root = Path(__file__).resolve().parents[3]
+        cand = root / "tools" / "cosyvoice"
+        script = cand / "infer.py"
+        if script.exists():
+            for py in (cand / ".venv" / "Scripts" / "python.exe",
+                       cand / ".venv" / "bin" / "python"):
+                if py.exists():
+                    entry = [str(py), str(script)]
+                    break
+            else:
+                entry = [sys.executable, str(script)]
+    _COSYVOICE_ENTRY.append(entry)
+    return entry
+
+
+def tts_available() -> bool:
+    """本机是否至少有一条可用的 TTS 通道。"""
+    if _cosyvoice_entry():
+        return True
+    if _edge_tts_available():
+        return True
+    if IS_MACOS and Path(SAY).exists():
+        return True
+    return bool(IS_WINDOWS and POWERSHELL)
+
+
+def list_voices() -> list[str]:
+    """列出本机各通道可用音色（用于界面下拉）。"""
+    voices: list[str] = []
+    if IS_MACOS and Path(SAY).exists():
+        try:
+            out = subprocess.run([SAY, "-v", "?"], capture_output=True, text=True, timeout=20)
+            voices += [ln.split()[0] for ln in out.stdout.splitlines() if ln.strip()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if IS_WINDOWS and POWERSHELL:
+        try:
+            proc = subprocess.run(
+                [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
+                 "Add-Type -AssemblyName System.Speech;"
+                 "(New-Object System.Speech.Synthesis.SpeechSynthesizer)"
+                 ".GetInstalledVoices()|%{$_.VoiceInfo.Name}"],
+                capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+            voices += [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if _edge_tts_available():
+        try:
+            import edge_tts
+
+            for v in _run_coro(edge_tts.list_voices()):
+                if str(v.get("Locale", "")).startswith(("zh", "en")):
+                    voices.append(v["ShortName"])
+        except Exception:  # noqa: BLE001
+            pass
+    return voices
+
+
+def _wpm_to_edge_rate(wpm: int) -> str:
+    """macOS 的 words-per-minute → edge-tts 的百分比（180 wpm 约等于正常语速）。"""
+    if not wpm:
+        return "+0%"
+    pct = int(round((wpm - 180) / 180 * 100))
+    return f"{max(-50, min(100, pct)):+d}%"
+
+
+def _macos_say(*, text: str, out_path: str, voice: str, rate: int) -> None:
+    """macOS say：输出 aiff 再转目标格式。"""
     if not Path(SAY).exists():
-        raise EngineError("本机没有 say 命令，无法使用本地 TTS", retryable=False)
+        raise EngineError("本机没有 say 命令", retryable=False)
     tmp_aiff = tempfile.NamedTemporaryFile(suffix=".aiff", delete=False).name
     cmd = [SAY, "-o", tmp_aiff]
     if voice:
@@ -683,25 +821,156 @@ def say_tts(*, text: str, out_path: str, voice: str = "", rate: int = 0) -> str:
         cmd += ["-r", str(rate)]
     cmd.append(text)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             # 语音名不存在时降级到系统默认音色
             retry = [SAY, "-o", tmp_aiff]
             if rate:
                 retry += ["-r", str(rate)]
             retry.append(text)
-            proc = subprocess.run(retry, capture_output=True, text=True, timeout=180)
+            proc = subprocess.run(retry, capture_output=True, text=True, timeout=300)
             if proc.returncode != 0:
-                raise EngineError("say 合成失败", retryable=True, detail=proc.stderr.strip())
+                raise EngineError("say 合成失败", detail=(proc.stderr or "").strip()[:400])
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         codec = "-c:a libmp3lame -b:a 192k" if out_path.endswith(".mp3") else "-c:a pcm_s16le"
-        run_ffmpeg(["-i", tmp_aiff, *codec.split(), "-ar", "44100", "-ac", "2", out_path], label="转码语音")
+        run_ffmpeg(["-i", tmp_aiff, *codec.split(), "-ar", "44100", "-ac", "2", out_path],
+                   label="转码语音")
     finally:
         try:
             os.unlink(tmp_aiff)
         except OSError:
             pass
-    return out_path
+
+
+def _sapi_tts(*, text: str, out_path: str, voice: str, rate: int) -> None:
+    """Windows 内置语音（SAPI）。
+
+    文本经 UTF-8 文件传入，不经命令行 —— 否则中文在 GBK 代码页下会乱码。
+    """
+    if not POWERSHELL:
+        raise EngineError("本机没有 PowerShell，无法调用 SAPI", retryable=False)
+    workdir = Path(tempfile.mkdtemp(prefix="sapi_"))
+    txt = workdir / "text.txt"
+    wav = workdir / "voice.wav"
+    txt.write_text(text, encoding="utf-8")
+    # SAPI 的音速是 -10..10，macOS 是 words-per-minute，按 20wpm≈1 档换算
+    step = max(-10, min(10, int(round(((rate or 180) - 180) / 20))))
+    pick = ""
+    if voice:
+        esc = voice.replace("'", "''")
+        pick = (f"try{{$s.SelectVoice('{esc}')}}catch{{}};")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "Add-Type -AssemblyName System.Speech;"
+        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+        f"$s.Rate={step};"
+        f"{pick}"
+        f"$s.SetOutputToWaveFile('{wav}');"
+        f"$t=[IO.File]::ReadAllText('{txt}',[Text.Encoding]::UTF8);"
+        "$s.Speak($t);$s.Dispose();"
+    )
+    proc = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-Command", script],
+        capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0 or not wav.exists():
+        raise EngineError("SAPI 合成失败",
+                          detail=((proc.stderr or proc.stdout or "").strip())[:400])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    codec = "-c:a libmp3lame -b:a 192k" if out_path.endswith(".mp3") else "-c:a pcm_s16le"
+    run_ffmpeg(["-i", str(wav), *codec.split(), "-ar", "44100", "-ac", "2", out_path],
+               label="转码语音")
+
+
+def _edge_tts_synthesize(*, text: str, out_path: str, voice: str, rate: int) -> None:
+    """edge-tts（微软神经网络语音，需联网）。直接产出 mp3。"""
+    import edge_tts
+
+    v = voice if (voice and "-" in voice) else settings.tts_voice_edge
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+
+    async def _go() -> None:
+        await edge_tts.Communicate(text, v, rate=_wpm_to_edge_rate(rate)).save(out_path)
+
+    _run_coro(_go())
+
+
+def _cosyvoice_synthesize(*, text: str, out_path: str, voice: str, rate: int,
+                          entry: list[str]) -> None:
+    """调用独立的 CosyVoice（阿里开源）推理进程。文本走文件传递，避免中文编码问题。"""
+    workdir = Path(tempfile.mkdtemp(prefix="cosy_"))
+    txt = workdir / "text.txt"
+    txt.write_text(text, encoding="utf-8")
+    cmd = [*entry, "--text-file", str(txt), "--out", str(out_path)]
+    if voice:
+        cmd += ["--voice", voice]
+    if rate:
+        cmd += ["--rate", str(rate)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise EngineError("CosyVoice 合成失败",
+                          detail=((proc.stderr or proc.stdout or "").strip())[-800:])
+    if not Path(out_path).exists() or Path(out_path).stat().st_size == 0:
+        raise EngineError("CosyVoice 未产出音频",
+                          detail=(proc.stdout or "").strip()[-400:])
+
+
+def say_tts(*, text: str, out_path: str, voice: str = "", rate: int = 0) -> str:
+    """合成旁白/台词到 out_path（mp3 或 wav）。
+
+    多级降级（settings.tts_engine 控制）：
+      1. CosyVoice —— 阿里开源，本机 GPU 推理，中文效果最好
+      2. edge-tts  —— 微软神经网络语音，需联网
+      3. 系统内置  —— macOS say / Windows SAPI
+    auto 模式下逐级尝试，任一级成功即返回；全部失败才抛错。
+    """
+    if not text.strip():
+        raise EngineError("TTS 文本为空", retryable=False)
+
+    rate = int(rate or settings.tts_rate or 180)
+    pref = (settings.tts_engine or "auto").lower()
+    order = ["cosyvoice", "edge", "system"] if pref == "auto" else [pref]
+    errors: list[str] = []
+
+    for tier in order:
+        try:
+            if tier == "cosyvoice":
+                entry = _cosyvoice_entry()
+                if not entry:
+                    errors.append("cosyvoice: 未安装（缺 tools/cosyvoice/infer.py）")
+                    continue
+                _cosyvoice_synthesize(text=text, out_path=out_path, voice=voice,
+                                      rate=rate, entry=entry)
+            elif tier == "edge":
+                if not _edge_tts_available():
+                    errors.append("edge: edge-tts 未安装")
+                    continue
+                _edge_tts_synthesize(text=text, out_path=out_path, voice=voice, rate=rate)
+            elif tier == "say":
+                _macos_say(text=text, out_path=out_path, voice=voice, rate=rate)
+            elif tier == "sapi":
+                _sapi_tts(text=text, out_path=out_path, voice=voice, rate=rate)
+            elif tier == "system":
+                if IS_MACOS and Path(SAY).exists():
+                    _macos_say(text=text, out_path=out_path, voice=voice, rate=rate)
+                elif IS_WINDOWS and POWERSHELL:
+                    _sapi_tts(text=text, out_path=out_path, voice=voice, rate=rate)
+                else:
+                    errors.append("system: 无可用系统 TTS")
+                    continue
+            else:
+                raise EngineError(f"未知 TTS 引擎：{tier}", retryable=False)
+
+            if Path(out_path).exists() and Path(out_path).stat().st_size > 0:
+                return out_path
+            errors.append(f"{tier}: 产出为空文件")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{tier}: {exc}")
+
+    raise EngineError("所有 TTS 通道均失败", retryable=False, detail="; ".join(errors))
+
 
 
 _MOOD_SCALES = {

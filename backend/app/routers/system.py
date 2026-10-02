@@ -26,7 +26,11 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     db_ok = True
     db_version = ""
     try:
-        db_version = db.execute(text("select version()")).scalar() or ""
+        # SQLite 没有 version() 函数，需按方言分支；否则零依赖方案会误报 degraded
+        if settings.is_postgres:
+            db_version = db.execute(text("select version()")).scalar() or ""
+        else:
+            db_version = db.execute(text("select sqlite_version()")).scalar() or ""
     except Exception as exc:  # noqa: BLE001
         db_ok = False
         db_version = str(exc)
@@ -39,7 +43,10 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "engines": {
             "ffmpeg": {"available": engine.ffmpeg_available(), "bin": settings.ffmpeg_bin},
             "ffprobe": {"available": engine.ffprobe_available()},
-            "say": {"available": engine.Path(engine.SAY).exists()},
+            # 不再只认 macOS 的 say：本机可能走 CosyVoice / edge-tts / SAPI
+            "say": {"available": engine.tts_available(),
+                    "engine": settings.tts_engine,
+                    "voice": settings.tts_voice_edge},
         },
         "workers": {"running": runner.running, "count": runner.workers},
         "handlers": registered_handlers(),

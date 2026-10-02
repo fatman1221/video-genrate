@@ -251,11 +251,13 @@ python3 scripts/e2e_check.py 20 5
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 后端启动报 `EEXIST` / `PermissionError` | PYTHONPATH shim | `env -u PYTHONPATH` |
-| Vite 秒退，日志有 `SAFE_DELETE` | NODE_OPTIONS shim | `env -u NODE_OPTIONS` |
+| 后端启动报 `EEXIST` / `PermissionError` | PYTHONPATH shim | `unset PYTHONPATH`（**别用 `env -u`**，见下行） |
+| Vite 秒退，日志有 `SAFE_DELETE` | NODE_OPTIONS shim | `unset NODE_OPTIONS`（**别用 `env -u`**） |
+| **命令 exit 0 但毫无输出、进程 0.3 秒就退出** | PATH 上的 `~/.local/bin/env` shim 遮蔽了真 `/usr/bin/env`，`env -u X cmd` 变成空操作 | 弃用 `env -u`，改成 shell 内建 `unset`；或 `command env -u X cmd` 绕过 shim |
 | 后端连不上库 | 容器没起 / 端口不对 | `docker compose up -d`；核对 `DATABASE_URL` 端口 |
 | 项目列表为空 | 没恢复 dump | 执行第三步 |
 | 图片 / 视频 404 | 没解包 storage | 执行第四步 |
 | 视频合成失败 | 缺 ffmpeg | 见第四节 |
 | `docker compose up` 影响了别的项目 | 目录名与别的 compose 项目重名 | 见第三节第 2 步的警告 |
 | 前端页面空白 | `vite.config.js` 白名单缺图标 | 把新图标加进 `MUI_ICONS` 并清 `.vite` |
+| 前端依赖装不上 / `npm install` 无输出 | 同样可能撞上 `env` shim | 直接 `npm install`，不要包 `env -u NODE_OPTIONS` |

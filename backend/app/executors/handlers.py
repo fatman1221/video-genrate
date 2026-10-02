@@ -84,21 +84,47 @@ def _maybe_complete_step(db, project: Project, kind: str) -> None:
 
 
 def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
-    """确保镜头有关键帧：没有就先按同一套参数生成。"""
-    if shot.image_asset_id:
+    """确保镜头有关键帧：没有就先按同一套参数生成。
+
+    payload.force=True 时忽略已有关键帧强制重生成（如切换人物一致性工作流后全量重跑）。
+    """
+    if not (ctx.task.payload or {}).get("force") and shot.image_asset_id:
         existing = ctx.db.get(Asset, shot.image_asset_id)
         if existing and Path(existing.file_path).exists():
             return existing
 
-    provider_name = (ctx.task.payload or {}).get("image_provider") or settings.default_provider_image
+    payload = ctx.task.payload or {}
+    provider_name = payload.get("image_provider") or settings.default_provider_image
     provider = _provider("image", provider_name)
     ctx.event("image.started", f"开始生成 Shot {shot.code} 关键帧")
     ctx.progress(10, "生成关键帧")
 
+    # 项目级画风锚定：set_image_provider 写进 project.extra 的前缀/负向词在此生效。
+    # 没有它的话，22 个镜头各自成图、色调与质感会明显跳。
+    proj_extra = project.extra if isinstance(project.extra, dict) else {}
+    prefix = (proj_extra.get("scene_prompt_prefix") or "").strip()
     prompt = shot.image_prompt or shot.description or shot.code
+    if prefix and not prompt.startswith(prefix):
+        prompt = f"{prefix}, {prompt}"
+    negative = shot.negative_prompt or proj_extra.get("negative_prompt") or ""
+    # 人物一致性：镜头若绑定角色，取该角色最新的定妆图作为参考图
+    # （IPAdapter / Qwen-Image-Edit 类工作流用 {{reference_image}} 占位符接收）
+    reference_image = None
+    char_ids = list(shot.character_ids or [])
+    if char_ids:
+        for cid in char_ids:
+            char = ctx.db.get(Character, cid) if cid else None
+            ref_asset_id = getattr(char, "reference_asset_id", None) if char else None
+            if ref_asset_id:
+                ref_asset = ctx.db.get(Asset, ref_asset_id)
+                if ref_asset and Path(ref_asset.file_path).exists():
+                    reference_image = ref_asset.file_path
+                    break
     result = provider.generate(
-        prompt=prompt, negative_prompt=shot.negative_prompt or "",
+        prompt=prompt, negative_prompt=negative,
         width=project.width, height=project.height,
+        seed=payload.get("seed"),
+        reference_image=reference_image,
         parameters={
             "title": shot.extra.get("point") if isinstance(shot.extra, dict) else "",
             "body": shot.description,
@@ -106,6 +132,10 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
             "style_tag": shot.visual_style or project.style,
             "shot_code": shot.code,
             "workdir": str(_workdir(ctx, "images")),
+            # ComfyUI：把工作流模板名透传到 Provider（缺了它 comfyui 通道不可用）
+            "workflow_name": _resolve_workflow_name(payload, project, kind="scene"),
+            "workflow_json": payload.get("workflow_json"),
+            "timeout": settings.comfyui_timeout,
         },
     )
     asset = assets_svc.ingest_result(
@@ -128,6 +158,33 @@ def _workdir(ctx: TaskContext, sub: str) -> Path:
     root = settings.storage_path / "temp" / ctx.task.project_id / sub
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _resolve_workflow_name(payload: dict[str, Any], project: Project, *, kind: str) -> str | None:
+    """决定本次出图用哪个 ComfyUI 工作流模板。
+
+    优先级：
+    1. 任务 payload 里显式指定（单次调用覆盖）
+    2. 项目 extra 里固化（`set_shot_image_workflow` 写入，整项目统一风格）
+    3. settings 默认（人物图 / 场景图各有默认模板）
+
+    kind="character" 取人物图模板，kind="scene" 取场景图模板。
+    """
+    explicit = payload.get("workflow_name")
+    if explicit:
+        return explicit
+    project_extra = project.extra if isinstance(project.extra, dict) else {}
+    key = {"character": "character_workflow_name",
+           "scene": "scene_workflow_name",
+           "video": "video_workflow_name"}.get(kind)
+    from_project = project_extra.get(key) if key else None
+    if from_project:
+        return from_project
+    if kind == "character":
+        return settings.comfyui_workflow_character
+    if kind == "scene":
+        return settings.comfyui_workflow_scene
+    return None
 
 
 def _latest_asset(db, project_id: str, asset_type: str) -> Asset | None:
@@ -185,16 +242,26 @@ def handle_character_reference(ctx: TaskContext) -> dict[str, Any]:
 
     ctx.event("character.started", f"开始生成 Character: {char.name}")
     ctx.progress(15, f"生成角色参考图：{char.name}")
+    proj_extra = project.extra if isinstance(project.extra, dict) else {}
     prompt = char.reference_prompt or (
         f"{project.style}，角色设定图：{char.name}，{char.appearance}，正面半身，干净扁平配色"
     )
+    prefix = (proj_extra.get("character_prompt_prefix") or "").strip()
+    if prefix and not prompt.startswith(prefix):
+        prompt = f"{prefix}, {prompt}"
     result = provider.generate(
-        prompt=prompt, negative_prompt=char.negative_prompt,
+        prompt=prompt,
+        negative_prompt=char.negative_prompt or proj_extra.get("negative_prompt") or "",
         width=project.width // 2 * 1, height=project.height,
+        seed=payload.get("seed"),
         parameters={
             "title": char.name, "body": char.appearance, "badge": "CHARACTER",
             "style_tag": project.style, "shot_code": char.name,
             "workdir": str(_workdir(ctx, "characters")),
+            # ComfyUI：人物设定图走 character 模板
+            "workflow_name": _resolve_workflow_name(payload, project, kind="character"),
+            "workflow_json": payload.get("workflow_json"),
+            "timeout": settings.comfyui_timeout,
         },
     )
     asset = assets_svc.ingest_result(
@@ -242,6 +309,11 @@ def handle_generate_video(ctx: TaskContext) -> dict[str, Any]:
             "style_tag": shot.visual_style or project.style,
             "shot_code": shot.code,
             "workdir": str(_workdir(ctx, "videos")),
+            # ComfyUI 视频工作流模板（如 minimax_h3_i2v）：单次 > 项目 extra > 无
+            "workflow_name": _resolve_workflow_name(payload, project, kind="video"),
+            "workflow_json": payload.get("workflow_json"),
+            # H3 一段 5~15 秒要几分钟，默认超时给足
+            "timeout": payload.get("timeout") or 3600,
         },
         progress_cb=lambda pct, msg: ctx.progress(20 + int(pct * 0.75), msg),
     )

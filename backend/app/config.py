@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # ---- 外部引擎（占位，接入时填） ----
     comfyui_base_url: str = "http://127.0.0.1:8188"
     comfyui_api_key: str = ""
+    #: 外部工作流模板目录（可选）。放本机专属、不便入库的工作流 JSON。
+    #: 同名模板会覆盖 backend/app/workflows/templates/ 下的内置模板。
+    comfyui_workflow_dir: str = ""
+    #: 人物图 / 场景图默认使用的 ComfyUI 工作流模板（见 app/workflows/templates/）
+    comfyui_workflow_character: str = "qwen_image_character"
+    comfyui_workflow_scene: str = "qwen_image_scene"
+    #: 单张图生成超时（秒）。本地 Qwen-Image 首张含加载模型，给足时间。
+    comfyui_timeout: int = 1800
     cloud_video_base_url: str = ""
     cloud_video_api_key: str = ""
     cloud_image_base_url: str = ""
@@ -76,6 +84,18 @@ class Settings(BaseSettings):
     default_shot_duration: float = 5.0
     tts_voice: str = "Tingting"
     tts_rate: int = 180
+
+    # ---- TTS 引擎（多级降级，见 providers/local_engine.py: say_tts） ----
+    # auto | cosyvoice | edge | say | sapi
+    # auto：CosyVoice（阿里开源）→ edge-tts → 系统内置；注册见 backend/.env
+    tts_engine: str = "auto"
+    # edge-tts 音色（微软神经网络，中文女声）
+    tts_voice_edge: str = "zh-CN-XiaoxiaoNeural"
+    # SAPI 音色（Windows 内置，留空用系统默认）
+    tts_voice_sapi: str = ""
+    # CosyVoice 独立推理进程的命令模板；{text_file}/{out_path}/{voice} 会被替换。
+    # 留空则探测 tools/cosyvoice/ 下的默认入口
+    cosyvoice_tts_cmd: str = ""
 
     # ---- 行为开关 ----
     auto_advance_workflow: bool = True
