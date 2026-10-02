@@ -18,6 +18,9 @@
                                                         └──────────────────────┘
 ```
 
+📖 **[Wiki](https://github.com/fatman1221/video-genrate/wiki)** —— 按主题查阅（快速开始 / 核心概念 / 流水线 / 换机迁移 / 故障速查）
+📄 **本文件** —— 设计思想全文 · 🗂 **[docs/](docs/)** —— 深度设计文档
+
 ---
 
 ## 一、它解决的是什么问题
@@ -583,6 +586,7 @@ video-skill/
 │   └── src/{pages,components}      工作台 / 项目详情 / 连续剧 / 资产库 / 系统设置
 ├── scripts/                        dev.sh · e2e_check.py · gen_images.py · build_intro.py
 ├── examples/shots_example.json     批量出图清单示例
+├── wiki/                           ★ GitHub Wiki 源文件（用 scripts/publish_wiki.sh 发布）
 ├── intro.html                      项目介绍页（单文件、零外部依赖）
 ├── local-postgres/                 自带 PostgreSQL
 └── docs/                           ARCHITECTURE / COMFYUI_QWEN / PIPELINE_NODES /
