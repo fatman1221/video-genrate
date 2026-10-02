@@ -15,17 +15,17 @@
                             │ 唯一入口：/api/skills（JSON Schema 契约）
 ┌───────────────────────────▼──────────────────────────────────────────┐
 │ L2  Skill 层        backend/app/skills                                │
-│                     69 个 Skill，按 project/script/storyboard/shot/   │
-│                     character/image/video/audio/subtitle/processing/  │
-│                     quality/workflow/asset/task/log/provider/browser/ │
-│                     orchestration 分类                                │
+│                     89 个 Skill，按 project/script/storyboard/        │
+│                     series/character/image/video/audio/subtitle/      │
+│                     processing/quality/workflow/asset/task/log/       │
+│                     provider/browser/orchestration 分类               │
 │                     职责：参数校验、权限/确认、编排、返回统一结构      │
 └───────────────────────────┬──────────────────────────────────────────┘
                             │ 提交 Task（异步）或直接返回数据（同步）
 ┌───────────────────────────▼──────────────────────────────────────────┐
 │ L3  执行层          backend/app/executors                             │
 │                     queue.py   DB 即队列 + worker 池 + 重试 + 恢复    │
-│                     handlers.py 20 类 TaskType 的真实执行逻辑         │
+│                     handlers.py 16 类 TaskType 的真实执行逻辑         │
 │                     职责：调度、进度回写、错误分类、幂等              │
 └───────────────────────────┬──────────────────────────────────────────┘
                             │ 只调用抽象接口

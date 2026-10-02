@@ -246,7 +246,7 @@ Agent 改了画面，但没意识到下游要重跑。与其靠 Prompt 提醒它
                            │ 提交 Task（异步）/ 直接返回（同步）
 ┌──────────────────────────▼─────────────────────────────────────┐
 │ L3  执行层        queue.py（DB 即队列 + worker 池 + 重试）     │
-│                   handlers.py（20 类任务的真实执行逻辑）        │
+│                   handlers.py（16 类任务的真实执行逻辑）        │
 └──────────────────────────┬─────────────────────────────────────┘
                            │ 只调用抽象接口
 ┌──────────────────────────▼─────────────────────────────────────┐
@@ -573,7 +573,7 @@ video-skill/
 │   │   ├── workflows/templates/    ★ ComfyUI 工作流模板 JSON
 │   │   ├── executors/              ★ 异步任务执行
 │   │   │   ├── queue.py            DB 即队列 + worker 池 + 重试 + 断点恢复
-│   │   │   └── handlers.py         20 类任务的真实执行逻辑
+│   │   │   └── handlers.py         16 类任务的真实执行逻辑
 │   │   ├── services/               业务服务（assets / workflow / projects / series /
 │   │   │                           characters / quality / planner / tasks / settings）
 │   │   └── routers/                REST 端点
@@ -652,6 +652,7 @@ VIDEO_GENERATED → QUALITY_CHECK → FAILED → ANALYZE → REGENERATE → QUAL
 | 人物一致性 / 伪影检测 | 需 VLM，当前固定 `WARN` 并声明 `requires: vision_model` | 接入视觉质检 provider |
 | Face Enhancement | 算子已定义，未接模型时 `skipped` | 接入 GFPGAN / CodeFormer |
 | 转场 / 精细剪辑 | 仅拼接与基础处理 | `EDIT_VIDEO` 增加 xfade 与时间线 DSL |
+| `ADD_*` 任务类型 | `TaskType` 声明了 20 个，但 `ADD_VOICE / ADD_MUSIC / ADD_SFX / ADD_SUBTITLE` **只有枚举、无 handler**（实际生效 16 个） | 实现或从枚举中移除 |
 | 认证与多租户 | 单机单用户 | API Key 中间件 + `owner` 过滤 |
 | 成本与配额 | 未统计 | 在 `tasks.result` 记录耗时与算力消耗，做预算护栏 |
 
