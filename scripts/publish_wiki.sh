@@ -40,15 +40,20 @@ trap 'rm -rf "$WORK"' EXIT
 
 if ! GIT_TERMINAL_PROMPT=0 git "${GIT_C[@]}" clone --quiet "$WIKI_URL" "$WORK/repo" 2>"$WORK/err"; then
   if grep -qi "not found" "$WORK/err"; then
-    cat >&2 <<'MSG'
-✗ wiki 仓库还不存在。GitHub 不会为「没有页面的 wiki」建立 git 后端，
-  必须先手工创建第一个页面：
+    WEB="${WIKI_URL%.wiki.git}/wiki"
+    cat >&2 <<MSG
+✗ wiki 仓库还不存在：$WEB
 
-    1. 打开 https://github.com/fatman1221/video-genrate/wiki
-    2. 点「Create the first page」
-    3. 标题填 Home，正文随便写一个字，点 Save
-       （内容会在下一步被本脚本覆盖，不用担心）
-    4. 回来重新运行本脚本
+  GitHub 只在「网页端保存过第一个页面」之后才创建 wiki 的 git 后端，
+  没有任何 REST/GraphQL API 可以代劳 —— 实测直接 push 会返回
+  "Repository not found"，git 并不会替你把仓库建出来。
+
+  请手工点一次（约 10 秒）：
+
+    1. 打开 $WEB/_new
+    2. 标题填 Home，正文随便写一个字，点 Save
+       （内容会在下一步被本脚本整体覆盖，不用在意）
+    3. 回来重新运行本脚本
 
 MSG
     exit 2
