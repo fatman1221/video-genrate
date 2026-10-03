@@ -173,6 +173,8 @@ if [ "$ATTEMPT" -gt 1 ]; then
 fi
 
 # --- 同步内容（镜像式覆盖，保证 wiki 与源目录一致）--------------------------
+# 注：某些环境里 find -delete 被安全删除钩子接管，会回显被删路径（形如 ./Home.md）。
+# 那是「正在删掉网页端手建的首屏」的正常回显，不是错误。
 cd "$REPO"
 find . -maxdepth 1 -name '*.md' -not -name '_*' -delete
 find . -maxdepth 1 -name '_*.md' -delete
