@@ -1445,43 +1445,71 @@ Phase 4–8 期间先用两个**零依赖可重跑**的临时 harness 顶上（�
 
 > Phase 10 会把它们正式收敛成 `backend/tests/` 下的 pytest 用例；这两个脚本届时删除。
 
-### 11.2 引入 pytest（Phase 10）
+### 11.2 交付：`backend/tests/`（Phase 10）
 
-新增 `backend/requirements-dev.txt`：`pytest` / `pytest-cov` / `httpx`（已有）
+```bash
+cd backend
+unset PYTHONPATH
+../.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+../.venv/Scripts/python.exe -m pytest              # 默认套件（不需要 GPU / ComfyUI）
+../.venv/Scripts/python.exe -m pytest -m gpu -s    # 显式跑真实出图（会占 GPU）
+../.venv/Scripts/python.exe -m pytest --cov=app/services --cov-report=term-missing
+```
 
-测试目录：`backend/tests/`
-
-### 11.3 测试清单（对应用户要求的 7 类）
-
-| # | 类别 | 测试内容 | 关键断言 |
-|---|---|---|---|
-| 1 | **Continuity** | 角色连续性信息是否正确注入 Prompt | 建锁 → 编译 → 断言 `surface` 逐字出现在 `compiled_prompt`；**粘词不算**、**负面提示词不算** |
-| 2 | **Prompt Version** | 改设定是否产生新版本 | 编译 v1 → 改 `Character.identity_anchors` → 再编译 → 断言 `latest_version==2` 且 **v1 未被修改** |
-| 3 | **Reference** | Shot 能否找到 Character/Location 的 Reference | 建角色 + 造型 + 参考图 → 断言 `prompt_version.reference_assets` 含正确槽位与 role |
-| 4 | **Dependency** | 角色修改后相关 Prompt 是否 stale | 编译 → 改角色 → `check_prompt_staleness` → 断言 `stale==True` 且 reason 指向该角色 |
-| 5 | **Preview** | Preview 是否**不消耗生成资源** | `preview_generation_plan` 后断言 **Task 表新增 0 条**、Provider 未被调用 |
-| 6 | **Confirm** | Confirm 后是否正确创建 Generation Task | 物化后断言 `item.status==TASK_CREATED`、`item.task_id` 非空、Task 类型正确 |
-| 7 | **Provenance** | 最终 Asset 能否反查完整链路 | 从 Asset 反查 → 断言返回 Project/Script/Shot/Character/Prompt/Version/Model/Provider/Reference/Task 全部非空 |
-
-**外加（照搬 drama-skills 的手法）**
-
-| # | 测试 | 说明 |
+| 文件 | 覆盖 | 关键断言 |
 |---|---|---|
-| 8 | **指纹失效** | 改 plan 任一字段 → 旧 fingerprint 失效 → 物化被拒 |
-| 9 | **确认一次性** | 确认后物化两次 → 第二次被拒 |
-| 10 | **正文卫生** | 编译产物含 `--ar` / 哈希 / 字段路径 → 编译失败 |
-| 11 | **文字政策冲突** | `exact_readable` + 全局无文字约束 → 编译失败 |
-| 12 | **PLAN 不可投产** | 引用 PENDING 的 plan item 作参考 → 被拒 |
-| 13 | **向后兼容** | 全部旧 Skill 在迁移后仍可用（跑 `e2e_check.py`） |
-| 14 | **变异测试**（可选，P2） | 逐个删守卫跑全量，记录"删掉仍全绿"的守卫 |
+| `conftest.py` | 全局夹具 | 临时目录独立 SQLite；**env 必须在 `import app` 之前设好**；**绝不 `runner.start()`**（否则测试真的出图）；`TestClient(app)` **不进上下文管理器**（不跑 lifespan） |
+| `test_continuity.py` | 锁面卫生 / 在场判定 / 注锁 / 快照 | 非法锁面被拒；**粘词不算**、**负面提示词不算**；编译后锁面**逐字出现在正向正文**；`compiled_from` 存 **id+version 不是哈希** |
+| `test_prompt_version.py` | 版本只增不改 | 再编译 → v2 且 **v1 字节未变**；`latest_version` 递增；单向回写老字段；`mirror=False` 可不回写 |
+| `test_reference.py` | 参考图槽位三态 | 无参考图**不产生假槽位**；`REF` → `ready`；实体被删 → `missing_asset`（**不静默丢弃**）；槽位必须声明 `may_control`/`must_not_control`；用途与记号是**封闭词表** |
+| `test_dependency.py` | STALE 动态判定 | 改角色 / 改锁面 / 改视觉设定 → stale 且**给出是人/物变了**的理由；**回写投影 bump `updated_at` 不会自触发 stale**（死循环守卫）；查 stale **无副作用** |
+| `test_preview_confirm.py` | Preview→Confirm→Produce | 预览 **Task 增量为 0**；错误指纹拒绝且**状态不前进**；确认短语 `CONFIRM <plan_id> <fp[:12]>`；**重复物化被拒**；取消后不可物化；改 plan 任一字段 → 旧指纹失效 |
+| `test_provenance.py` | 血缘反查 | 七个必备节点齐全；链路**带得出当时的正文**、编译输入快照、锁、参考图；孤立产物 → `complete=False` 且**列出缺什么** |
+| `test_hygiene.py` | 正文卫生 + 文字政策 | 10 类禁止内容（引擎语法/哈希/字段路径/内部代号/流程说明）全拒；**失败不留半成品**；`exact_readable` 缺文字被拒；`readable` 与「全局无文字」**不可共存** |
+| `test_resolution.py` | 档位解析 + 能力闸门 | 别名归一（`2160p`→`4K`）；**2K 预设对齐官方尺寸**；超原生**放行但告警**；未声明能力的 provider **不被误伤** |
+| `test_backward_compat.py` | 单向兼容投影 | `character_ids` 回写的是**角色 id 而非名字**（否则人物一致性静默失效）；老字段仍可读；**新层压过被投毒的老字段**；部分唯一索引语义（空 code 不拦、非空重复才拦、跨项目放行） |
+| `test_api_surface.py` | 对外契约 | 30 个新 Skill 全部注册且**每个都有 `input_schema`**；8 个只读端点 200；`bootstrap_project` 在干净库可跑（**索引回归门禁**）；`compile_image_prompt` 传可选字段不崩（**参数打包回归门禁**） |
+| `test_pipeline_local.py` | 出图链路端到端（CPU） | 用 `local` Provider **真跑任务**：产物用**编译正文**而非被投毒的老字段；产物挂 `prompt_version_id` 且 `/provenance` 判定完整；未编译时回落老字段；**档位真的落到产物宽高** |
+| `test_gpu_comfy_image.py` | 真实 ComfyUI（`-m gpu`） | 2K 走通「档位 → 模板 → 产物尺寸」三环一致；ComfyUI 不可达则 **skip 而非 fail** |
+
+**现状：`140 passed, 1 deselected`（默认套件 6.8s）。**
+
+迁移相关模块覆盖率：`continuity 81%` / `generation_plans 82%` / `prompt_compiler 80%` /
+`provenance 87%` / `resolution 87%` / `visual_bible 79%`。
+
+### 11.3 与 14 类要求的对应
+
+| # | 类别 | 落在哪 |
+|---|---|---|
+| 1 | Continuity | `test_continuity.py` |
+| 2 | Prompt Version | `test_prompt_version.py` |
+| 3 | Reference | `test_reference.py` |
+| 4 | Dependency | `test_dependency.py` |
+| 5 | Preview | `test_preview_confirm.py::test_preview_creates_no_task` |
+| 6 | Confirm | `test_preview_confirm.py::test_materialize_creates_task` |
+| 7 | Provenance | `test_provenance.py` |
+| 8 | 指纹失效 | `test_preview_confirm.py::test_fingerprint_invalidated_by_change` |
+| 9 | 确认一次性 | `test_preview_confirm.py::test_materialize_twice_rejected` |
+| 10 | 正文卫生 | `test_hygiene.py` |
+| 11 | 文字政策冲突 | `test_hygiene.py::test_exact_readable_vs_global_no_text_conflict` |
+| 12 | PLAN 不可投产 | `test_preview_confirm.py::test_plan_state_reference_rejected` |
+| 13 | 向后兼容 | `test_backward_compat.py` + `test_pipeline_local.py` |
+| 14 | 变异测试 | 见 11.4（**结构上已免疫**，不另起工具） |
 
 ### 11.4 测试哲学（照搬 drama-skills）
 
-> ❌ **禁止**"断言文档/资源包含某字符串"的测试
+> ❌ **禁止**「断言文档 / 资源包含某字符串」的测试
 > ✅ 唯一允许的字面扫描方向：**断言被禁字段名不存在**
 > ✅ 规则能结构化就解析契约（规则表 ID、分级）；工具用输入/输出夹具证明行为
 
----
+**关于第 14 类（变异测试）**：本项目不做「删守卫跑全量」式的工具化变异测试，而是让
+套件**结构上免疫** —— 每一条不变式都配一条「违反它必须抛错」的用例（锁面不合规要抛、
+错误指纹要拒、重复物化要拒、卫生不达标要拒……）。删掉任何一个守卫，对应的用例立刻变红，
+效果与变异测试等价，且不用维护额外工具链。
+
+**已清理**：Phase 4–9 期间顶替用的临时 harness（`_smoke_services.py` / `_regress_phase8.py` /
+`_e2e_phase9.py` / `_e2e_phase9_comfy.py`）已全部删除，前者并入 `tests/`，
+真实出图那支改成 `tests/test_gpu_comfy_image.py`（`-m gpu` 显式选择）。
 
 ## 12. 实施计划
 
@@ -1496,7 +1524,7 @@ Phase 4–8 期间先用两个**零依赖可重跑**的临时 harness 顶上（�
 | **7** | **Preview / Confirm / Produce** | 计划 + 指纹 + 物化 | ✅ 已完成（预览零资源消耗实测 0→0；错误指纹拒绝；重复物化拒绝；PLAN 态拒投产） |
 | **8** | Skill / API | 30 个新 Skill + 8 个读接口 | ✅ 已完成（Skill 94→124，`visual=12/plan=7/image=5/character=2/storyboard=2/asset=1/video=1`；8 个只读端点全部 200；68 项隔离库回归断言通过；**并修掉一个由本次迁移引入的回归**：`characters(project_id, code)` 全量唯一索引打挂不写 code 的既有 `bootstrap_project` → 改部分唯一索引 `WHERE code != ''`） |
 | **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | ✅ 已完成（新增 `services/resolution.py`；3 个出图 Skill 支持 `resolution`/`aspect_ratio`；`_ensure_shot_image`/`handle_generate_video` 改为「编译产物优先、老字段兜底」；产物回填 `prompt_version_id` 闭合血缘。隔离库 E2E **41 项断言通过**；真实 ComfyUI 2K 出图成功（2752×1536 / 130s）。**4K 闸门验证有效但暂不作为默认档位**，见 §8.4） |
-| **10** | **测试** | pytest 全套 14 类 | 全绿 |
+| **10** | **测试** | pytest 全套 14 类 | ✅ 已完成（`backend/tests/` 12 个文件、**140 passed / 1 deselected**（默认套件 6.8s，不含 GPU）；新增 `requirements-dev.txt` + `pytest.ini`；临时 harness 全部并入 pytest 后删除；迁移相关模块覆盖率 79–87%） |
 | **11** | 文档 | 更新 README / ARCHITECTURE / Agent 调用指南 | — |
 | **12** | **最终 Review** | 逐 Phase 复查 + 旧功能回归 | `e2e_check.py` 通过 |
 
