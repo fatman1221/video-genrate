@@ -12,16 +12,17 @@ import react from '@vitejs/plugin-react'
  *    Vite 重新预构建，进而撞上批量删除保护、把 dev server 直接杀掉。
  */
 const MUI_ICONS = [
-  'Add', 'Approval', 'ApprovalOutlined', 'ArrowBack', 'AudiotrackOutlined', 'AutoAwesome',
-  'AutoAwesomeMotion', 'Block', 'Brightness4', 'Brightness7', 'Check', 'CheckCircle', 'Close',
-  'CloudOutlined', 'CollectionsOutlined', 'Compare', 'ContentCut', 'DeleteOutline', 'Description',
-  'Download', 'EditOutlined', 'Error', 'ErrorOutline', 'FaceOutlined', 'FaceRetouchingNatural',
-  'FactCheck', 'GraphicEq', 'Image', 'InfoOutlined', 'LandscapeOutlined', 'MemoryOutlined',
-  'MenuBookOutlined', 'Mic', 'MicNone', 'Movie', 'MovieCreation', 'MovieFilter',
-  'MovieFilterOutlined', 'MusicNote', 'OpenInNew', 'PersonOutline', 'PlayArrow',
-  'PlayCircleOutline', 'PriorityHigh', 'RecordVoiceOver', 'Refresh', 'Replay', 'RestartAlt',
-  'RocketLaunch', 'SaveOutlined', 'SmartToy', 'SubscriptionsOutlined', 'Subtitles',
-  'TerminalOutlined', 'TuneOutlined', 'Undo', 'Videocam', 'Verified', 'ViewQuilt', 'VolumeUp',
+  'Add', 'Approval', 'ApprovalOutlined', 'ArrowBack', 'ArticleOutlined', 'AttachFile',
+  'AudiotrackOutlined', 'AutoAwesome', 'AutoAwesomeMotion', 'Block', 'Brightness4', 'Brightness7',
+  'Check', 'CheckCircle', 'Close', 'CloudOutlined', 'CollectionsOutlined', 'Compare', 'ContentCopy',
+  'ContentCut', 'DeleteOutline', 'Description', 'Download', 'EditOutlined', 'Error', 'ErrorOutline',
+  'ExpandLess', 'ExpandMore', 'FaceOutlined', 'FaceRetouchingNatural', 'FactCheck', 'GraphicEq',
+  'Image', 'InfoOutlined', 'LandscapeOutlined', 'MemoryOutlined', 'MenuBookOutlined', 'Mic',
+  'MicNone', 'Movie', 'MovieCreation', 'MovieFilter', 'MovieFilterOutlined', 'MusicNote',
+  'OpenInNew', 'PersonOutline', 'PlayArrow', 'PlayCircleOutline', 'PriorityHigh',
+  'RecordVoiceOver', 'Refresh', 'Replay', 'RestartAlt', 'RocketLaunch', 'SaveOutlined',
+  'SmartToy', 'SubscriptionsOutlined', 'Subtitles', 'TerminalOutlined', 'TuneOutlined', 'Undo',
+  'UploadFile', 'Videocam', 'Verified', 'ViewQuilt', 'VolumeUp',
 ].map((n) => `@mui/icons-material/${n}`)
 
 export default defineConfig({

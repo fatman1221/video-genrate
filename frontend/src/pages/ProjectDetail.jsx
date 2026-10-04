@@ -36,6 +36,7 @@ import TaskTable from '../components/TaskTable'
 import LogStream from '../components/LogStream'
 import FinalPanel from '../components/FinalPanel'
 import VoiceStudio from '../components/VoiceStudio'
+import ScriptStudio from '../components/ScriptStudio'
 import {
   SKILL, deleteAsset, fmtBytes, fmtDuration, fmtTime, getTtsVoices,
   statusColor, useApi, useProjectStream,
@@ -540,41 +541,16 @@ export default function ProjectDetail() {
         </Grid>
       )}
 
-      {/* 1 脚本 */}
+      {/* 1 脚本工作台：按幕切分 / 逐幕生成 / 参考素材 */}
       {tab === 1 && (
-        <Grid container spacing={2.5}>
-          <Grid item xs={12} md={4}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" sx={{ mb: 1.2 }}>分章大纲</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
-                  {overview?.script?.outline || '尚未生成脚本'}
-                </Typography>
-                {overview?.script && (
-                  <Stack direction="row" spacing={0.8} sx={{ mt: 2 }}>
-                    <Chip size="small" variant="outlined" label={`${overview.script.length} 字`} />
-                    <Chip size="small" variant="outlined" label={overview.script.provider} />
-                  </Stack>
-                )}
-              </CardContent>
-            </Card>
-          </Grid>
-          <Grid item xs={12} md={8}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" sx={{ mb: 1.2 }}>脚本正文</Typography>
-                <Box
-                  sx={{
-                    maxHeight: 620, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 13.5,
-                    lineHeight: 2, color: 'text.primary',
-                  }}
-                >
-                  {overview?.script?.content || '尚未生成脚本'}
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-        </Grid>
+        <ScriptStudio
+          projectId={projectId}
+          script={overview?.script}
+          busy={busy}
+          run={run}
+          onRefresh={reloadAll}
+          notify={(type, text) => setToast({ type, text })}
+        />
       )}
 
       {/* 2 分镜 */}

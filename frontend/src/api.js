@@ -44,6 +44,10 @@ export const SKILL = {
   // 资产库 / 系统设置
   generateStandaloneVoice: (p) => invokeAsHuman('generate_standalone_voice', p),
   setDefaultProvider: (p) => invokeAsHuman('set_default_provider', p),
+  // 脚本工作台：按幕切分与逐幕写作
+  planScriptSections: (p) => invokeAsHuman('plan_script_sections', p),
+  upsertScriptSection: (p) => invokeAsHuman('upsert_script_section', p),
+  deleteScriptSection: (p) => invokeAsHuman('delete_script_section', p),
 }
 
 // ---- 资产库 ----
@@ -57,7 +61,63 @@ export const generateVoiceAsset = (body) =>
 export const getProviderSettings = () => get('/api/settings/providers')
 export const patchProviderSetting = (body) =>
   client.patch('/api/settings/providers', body).then((r) => r.data)
-export const getTtsVoices = () => get('/api/settings/voices')
+
+/**
+ * 音色 / 引擎清单。
+ *
+ * 后端枚举本机音色（PowerShell + edge-tts 网络请求）即使有缓存，冷启动也要几秒；
+ * 项目详情页与配音调音台都会用它，因此这里做「短时 memo + in-flight 去重」：
+ * 同一份清单在 TTL 内只请求一次，且 React StrictMode 的双调用也会被合并掉。
+ * 传 force=true 可强制刷新（设置页改过系统音色后用）。
+ */
+const VOICES_TTL_MS = 5 * 60 * 1000
+let _voicesMemo = { at: 0, data: null, inflight: null }
+
+export const getTtsVoices = (force = false) => {
+  const now = Date.now()
+  if (!force) {
+    if (_voicesMemo.data && now - _voicesMemo.at < VOICES_TTL_MS) {
+      return Promise.resolve(_voicesMemo.data)
+    }
+    if (_voicesMemo.inflight) return _voicesMemo.inflight
+  }
+  const p = get('/api/settings/voices', force ? { refresh: true } : undefined)
+    .then((data) => {
+      _voicesMemo = { at: Date.now(), data, inflight: null }
+      return data
+    })
+    .catch((err) => {
+      _voicesMemo.inflight = null
+      throw err
+    })
+  _voicesMemo.inflight = p
+  return p
+}
+
+
+// ---- 脚本工作台：分段写作 + 参考素材 ----
+export const getScriptSections = (projectId) =>
+  get(`/api/projects/${projectId}/script-sections`)
+/** 取「写这一幕」的完整上下文（含前文正文），复制给 Agent 即可续写。 */
+export const getSectionPrompt = (projectId, sectionId) =>
+  get(`/api/projects/${projectId}/script-sections/${sectionId}/prompt`)
+/** 取「请帮我规划分幕结构」的提示词。 */
+export const getPlanPrompt = (projectId) =>
+  get(`/api/projects/${projectId}/script-sections/plan-prompt`)
+
+export const getReferences = (projectId) => get(`/api/projects/${projectId}/references`)
+export const removeReference = (projectId, assetId) =>
+  client.delete(`/api/projects/${projectId}/references/${assetId}`).then((r) => r.data)
+/** 上传参考素材（文本/图片/音视频），作为脚本与分镜的创作依据。 */
+export const uploadReference = (projectId, file, { kind = '', note = '' } = {}) => {
+  const form = new FormData()
+  form.append('file', file)
+  if (kind) form.append('kind', kind)
+  if (note) form.append('note', note)
+  return client
+    .post(`/api/projects/${projectId}/references`, form, { timeout: 300000 })
+    .then((r) => r.data)
+}
 
 // ---- 连续剧（Series）----
 export const getSeriesList = (params) => get('/api/series', params)

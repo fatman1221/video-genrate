@@ -47,6 +47,7 @@ const SAMPLE_TEXT = '来上海七百多天了，我到现在也没整明白，�
  */
 export default function VoiceStudio({ projectId, shots = [], assets = [], busy, run, onRefresh, notify }) {
   const [cfg, setCfg] = useState(null)
+  const [cfgState, setCfgState] = useState('loading') // loading | ready | error
   const [engineName, setEngineName] = useState('')
   const [globalSpeaker, setGlobalSpeaker] = useState('')
   const [globalInstruct, setGlobalInstruct] = useState('')
@@ -57,9 +58,10 @@ export default function VoiceStudio({ projectId, shots = [], assets = [], busy, 
   const [musicVolume, setMusicVolume] = useState(0.16)
   const [voiceVolume, setVoiceVolume] = useState(1)
 
-  const loadCfg = async () => {
+  const loadCfg = async (force = false) => {
+    setCfgState('loading')
     try {
-      const data = await getTtsVoices()
+      const data = await getTtsVoices(force)
       setCfg(data)
       const engines = data?.engines || []
       const qwen = engines.find((e) => e.name === 'qwen3tts') || engines[0]
@@ -68,9 +70,11 @@ export default function VoiceStudio({ projectId, shots = [], assets = [], busy, 
       if (!musicPrompt) {
         setMusicPrompt(data?.music_styles?.find((s) => s.name === 'pop')?.desc || '')
       }
+      setCfgState('ready')
     } catch (err) {
       console.error('[VoiceStudio] 音色清单读取失败', err)
       setCfg(null)
+      setCfgState('error')
     }
   }
 
@@ -230,14 +234,37 @@ export default function VoiceStudio({ projectId, shots = [], assets = [], busy, 
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
               <RecordVoiceOverIcon color="primary" />
               <Typography variant="h6" sx={{ flex: 1 }}>配音引擎与音色</Typography>
-              {engine?.supports_instruct ? (
-                <Chip size="small" color="primary" variant="outlined" label="支持情感指令" />
-              ) : (
-                <Chip size="small" variant="outlined" label="不支持情感指令" />
+              {engine && (
+                <Chip
+                  size="small"
+                  color={engine.supports_instruct ? 'primary' : 'default'}
+                  variant="outlined"
+                  label={engine.supports_instruct ? '支持情感指令' : '不支持情感指令'}
+                />
               )}
             </Stack>
 
-            {!cfg && <Alert severity="warning">读取音色清单失败，请确认后端在线。</Alert>}
+            {cfgState === 'loading' && !cfg && (
+              <Stack direction="row" spacing={1.2} alignItems="center" sx={{ py: 1.5 }}>
+                <CircularProgress size={16} />
+                <Typography variant="body2" color="text.secondary">
+                  正在读取本机音色清单（首次约需数秒）…
+                </Typography>
+              </Stack>
+            )}
+
+            {cfgState === 'error' && (
+              <Alert
+                severity="warning"
+                action={
+                  <Button color="inherit" size="small" onClick={() => loadCfg(true)}>
+                    重试
+                  </Button>
+                }
+              >
+                读取音色清单失败，请确认后端在线。
+              </Alert>
+            )}
 
             {cfg && (
               <>
