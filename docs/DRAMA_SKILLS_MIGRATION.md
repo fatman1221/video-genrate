@@ -1413,10 +1413,10 @@ _ADDED_COLUMNS = {
 | **1** | 分析 video-genrate | ✅ 本文件 §1 | — |
 | **2** | 分析 drama-skills + 差异 + ER | ✅ 本文件 §2–5 | — |
 | **3** | **数据库 Migration** | 10 新表 + 24 新列 + 索引 + 幂等回填 | ✅ 已完成（13 张物理表 / 26 列 / 6 索引 / 三项回填；老库升级 + 全新空库双路径实测通过；94 个 Skill 数量不变） |
-| **4** | Entity / Repository / Service | models.py 扩展 + 5 个新 service | 单元测试通过 |
-| **5** | **Prompt Compiler** | 八段式渲染 + 注锁 + 卫生校验 | 编译产物符合 §6.2；注锁失败即抛 |
-| **6** | Reference / Continuity | 槽位绑定 + 锁 + 增量 + stale 判定 | 测试 #1/#3/#4 通过 |
-| **7** | **Preview / Confirm / Produce** | 计划 + 指纹 + 物化 | 测试 #5/#6/#8/#9 通过 |
+| **4** | Entity / Repository / Service | models.py 扩展 + 5 个新 service | ✅ 已完成（visual_bible / continuity / prompt_compiler / provenance / generation_plans 五个模块） |
+| **5** | **Prompt Compiler** | 八段式渲染 + 注锁 + 卫生校验 | ✅ 已完成（八段 + 强制注锁 + 正文卫生 + 文字政策两层映射 + 单向镜像；53 项冒烟断言通过） |
+| **6** | Reference / Continuity | 槽位绑定 + 锁 + 增量 + stale 判定 | ✅ 已完成（槽位/用途/控制边界落在 prompt_versions；锁面卫生校验 + 两种假命中防护；stale 动态判定） |
+| **7** | **Preview / Confirm / Produce** | 计划 + 指纹 + 物化 | ✅ 已完成（预览零资源消耗实测 0→0；错误指纹拒绝；重复物化拒绝；PLAN 态拒投产） |
 | **8** | Skill / API | 15 个新 Skill + 8 个读接口 | Skill 清单可枚举；Schema 校验生效 |
 | **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | 端到端出 1 张 4K 图 |
 | **10** | **测试** | pytest 全套 14 类 | 全绿 |
