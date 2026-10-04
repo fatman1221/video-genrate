@@ -29,6 +29,54 @@ QWEN_PY = ROOT / "tools" / "qwen3-tts" / "venv" / "Scripts" / "python.exe"
 INFER = ROOT / "tools" / "qwen3-tts" / "infer.py"
 FFMPEG = Path.home() / ".workbuddy" / "binaries" / "ffmpeg" / "bin" / "ffmpeg.exe"
 
+# 模型自带音色（唯一事实来源：模型的 config.json → talker_config.spk_id）
+SPK_CONFIG = (ROOT / "tools" / "qwen3-tts" / "models"
+              / "Qwen3-TTS-12Hz-1.7B-CustomVoice" / "config.json")
+_FALLBACK_SPEAKERS = ("serena", "vivian", "uncle_fu", "ryan", "aiden",
+                      "ono_anna", "sohee", "eric", "dylan")
+
+
+def known_speakers() -> set[str]:
+    """读模型配置得到合法音色名（小写）。读不到时用内置清单兜底。"""
+    try:
+        cfg = json.loads(SPK_CONFIG.read_text(encoding="utf-8"))
+        return {str(k).lower() for k in cfg["talker_config"]["spk_id"]}
+    except Exception:
+        return set(_FALLBACK_SPEAKERS)
+
+
+def resolve_speaker(code: str, raw: str, cast: dict[str, str],
+                    default_voice: str, known: set[str]) -> str:
+    """把规格里的 voice_speaker 解析成**模型认得的真实音色名**。
+
+    规格里通常写角色代号（M / AI 这种语义名），需要经 top-level `voice_cast` 映射；
+    也允许直接写真音色名。**解析不出来就报错**——不能静默兜底，
+    因为 Qwen3-TTS 收到未知音色名会直接 raise NotImplementedError，
+    而且默认值 'Cherry' 同样不在合法清单里。
+    """
+    cand = (raw or "").strip()
+    if cand:
+        if cand.upper() in cast:
+            spk = cast[cand.upper()]
+            if spk not in known:
+                raise SystemExit(f"[!] 镜头 {code}：voice_cast['{cand}'] = '{spk}' 不是合法音色\n"
+                                 f"    合法音色：{', '.join(sorted(known))}")
+            return spk
+        if cand.lower() in known:
+            return cand.lower()
+        raise SystemExit(
+            f"[!] 镜头 {code}：voice_speaker='{cand}' 既不是 voice_cast 里的角色代号，"
+            f"也不是合法音色名\n"
+            f"    合法音色：{', '.join(sorted(known))}\n"
+            f"    角色代号：{', '.join(sorted(cast)) or '（voice_cast 为空）'}")
+    if default_voice:
+        if default_voice not in known:
+            raise SystemExit(f"[!] 顶层 voice='{default_voice}' 不是合法音色，"
+                             f"合法值：{', '.join(sorted(known))}")
+        return default_voice
+    raise SystemExit(f"[!] 镜头 {code} 没有 voice_speaker，且顶层 voice 为空，"
+                     f"无法确定音色。请在规格里补 voice_cast 或 voice。")
+
 from app.database import session_scope  # noqa: E402
 from app.models import Asset, Shot  # noqa: E402
 from app.services import assets as assets_svc  # noqa: E402
@@ -40,6 +88,8 @@ def main() -> None:
     ap.add_argument("--spec", required=True)
     ap.add_argument("--project", required=True)
     ap.add_argument("--device", default="auto", help="auto / cuda:0 / cpu")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="只解析规格并打印将合成的音色/文本，不加载模型、不占 GPU")
     args = ap.parse_args()
 
     spec_path = Path(args.spec)
@@ -56,21 +106,41 @@ def main() -> None:
         shots = db.query(Shot).filter(Shot.project_id == args.project).all()
         by_code = {s.code: s for s in shots}
 
+    # 角色代号 -> 真实音色名（规格顶层 voice_cast），以及全局兜底音色
+    cast = {str(k).strip().upper(): str(v).strip().lower()
+            for k, v in (spec.get("voice_cast") or {}).items()}
+    default_voice = str(spec.get("voice") or "").strip().lower()
+    known = known_speakers()
+
     todo = []
+    used: dict[str, list[str]] = {}
     for code, sh in lines.items():
         shot = by_code.get(code)
         if not shot:
             print(f"[!] 镜头 {code} 不在项目中，跳过")
             continue
+        speaker = resolve_speaker(code, str(sh.get("voice_speaker") or ""),
+                                  cast, default_voice, known)
+        used.setdefault(speaker, []).append(code)
         todo.append({
             "code": code,
             "shot_id": shot.id,
             "scene_id": shot.scene_id,
             "text": sh["voice_script"],
             "instruct": sh.get("voice_instruct", ""),
-            "speaker": sh.get("voice_speaker", "Cherry"),
+            "speaker": speaker,
         })
     print(f"[+] 待合成 {len(todo)} 条")
+    for spk, codes in sorted(used.items()):
+        print(f"    音色 {spk:<9} {len(codes):>2} 条 -> {','.join(codes)}")
+
+    if args.dry_run:
+        print("\n--- dry-run：不调用 TTS，仅预览 ---")
+        for t in todo:
+            print(f"  {t['code']}  [{t['speaker']}]  {t['text'][:46]}")
+            print(f"        instruct: {t['instruct'][:60] or '（无）'}")
+        print(f"\n[✓] 规格解析通过，共 {len(todo)} 条；去掉 --dry-run 即可真正合成。")
+        return
 
     with tempfile.TemporaryDirectory(prefix="qwentts_") as td:
         jobs = [{"text": t["text"], "out": str(Path(td) / f"{t['code'].replace('-', '_')}.wav"),

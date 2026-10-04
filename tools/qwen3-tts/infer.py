@@ -2,11 +2,13 @@
 """Qwen3-TTS CustomVoice 推理脚本（带情感的中文配音）。
 
 单条模式:
-  python infer.py --text-file t.txt --out v.wav [--speaker Cherry] [--instruct "用温柔的语气说"]
+  python infer.py --text-file t.txt --out v.wav [--speaker serena] [--instruct "用温柔的语气说"]
 
 批量模式（一次模型加载，推荐）:
   python infer.py --jobs jobs.json
-  jobs.json: [{"text": "...", "out": "a.wav", "instruct": "...", "speaker": "Cherry"}, ...]
+  jobs.json: [{"text": "...", "out": "a.wav", "instruct": "...", "speaker": "serena"}, ...]
+
+合法音色: serena / vivian / uncle_fu / ryan / aiden / ono_anna / sohee / eric / dylan
 """
 import argparse
 import json
@@ -14,13 +16,34 @@ import sys
 from pathlib import Path
 
 DEFAULT_MODEL = str(Path(__file__).parent / "models" / "Qwen3-TTS-12Hz-1.7B-CustomVoice")
-DEFAULT_SPEAKER = "Cherry"  # 中文女声，温柔自然
+# 注意：必须是模型 config.json → talker_config.spk_id 里真实存在的音色名。
+# 传未知音色名模型会 raise NotImplementedError，所以这里不能随手写。
+DEFAULT_SPEAKER = "serena"  # 中文女声，温柔自然
+_FALLBACK_SPEAKERS = ("serena", "vivian", "uncle_fu", "ryan", "aiden",
+                      "ono_anna", "sohee", "eric", "dylan")
+
+
+def known_speakers(model_dir: str) -> set[str]:
+    """从模型配置读合法音色名（小写）；读不到则用内置清单兜底。"""
+    try:
+        cfg = json.loads((Path(model_dir) / "config.json").read_text(encoding="utf-8"))
+        return {str(k).lower() for k in cfg["talker_config"]["spk_id"]}
+    except Exception:
+        return set(_FALLBACK_SPEAKERS)
 
 
 def synthesize_all(jobs: list[dict], model_dir: str, device: str = "auto") -> None:
     import torch
     import soundfile as sf
     from qwen_tts import Qwen3TTSModel
+
+    # 前置校验：音色名非法就在加载模型前报错，别浪费几分钟加载再崩
+    known = known_speakers(model_dir)
+    bad = sorted({str(j.get("speaker") or DEFAULT_SPEAKER).lower()
+                  for j in jobs if (j.get("text") or "").strip()} - known)
+    if bad:
+        raise SystemExit(f"[qwen3-tts] 非法音色名 {bad}\n"
+                         f"    合法音色：{', '.join(sorted(known))}")
 
     if device == "auto":
         device = "cuda:0" if torch.cuda.is_available() else "cpu"

@@ -422,7 +422,16 @@ def main() -> None:
     ap.add_argument("--file", required=True, help="项目规格 JSON 路径")
     ap.add_argument("--from", dest="from_stage", default=None,
                     choices=STAGES, help="从指定阶段开始重跑（会清除该阶段及之后的状态）")
+    ap.add_argument("--until", dest="until_stage", default=None,
+                    choices=STAGES,
+                    help="只跑到该阶段为止（含），用于分阶段推进 / 中途人工确认")
     args = ap.parse_args()
+
+    # 到 --until 指定阶段（含）就停下；用于「先出定妆图+首批关键帧」这类人工确认点。
+    stop_at = STAGES.index(args.until_stage) if args.until_stage else None
+
+    def should_stop(stage: str) -> bool:
+        return stop_at is not None and STAGES.index(stage) >= stop_at
 
     spec_path = Path(args.file)
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -441,22 +450,51 @@ def main() -> None:
           f"{sum(len(sc['shots']) for sc in spec['scenes'])} 镜头")
 
     pid = stage_project(spec, st)
+    if should_stop("project"):
+        return _report(pid, st, args)
     stage_config(spec, st, pid)
+    if should_stop("config"):
+        return _report(pid, st, args)
     mapping = stage_characters(spec, st, pid)
+    if should_stop("characters"):
+        return _report(pid, st, args)
     stage_char_refs(spec, st, mapping)
+    if should_stop("char_refs"):
+        return _report(pid, st, args)
     stage_storyboard(spec, st, pid)
+    if should_stop("storyboard"):
+        return _report(pid, st, args)
     stage_images(spec, st, pid)
+    if should_stop("images"):
+        return _report(pid, st, args)
     stage_videos(spec, st, pid)
+    if should_stop("videos"):
+        return _report(pid, st, args)
     stage_voices(spec, st, pid)
+    if should_stop("voices"):
+        return _report(pid, st, args)
     stage_music(spec, st, pid)
+    if should_stop("music"):
+        return _report(pid, st, args)
     stage_subtitle(spec, st, pid)
+    if should_stop("subtitle"):
+        return _report(pid, st, args)
     stage_merge(spec, st, pid)
+    if should_stop("merge"):
+        return _report(pid, st, args)
     stage_compose(spec, st, pid)
 
-    print("\n===== 全部完成 =====")
+    _report(pid, st, args)
+
+
+def _report(pid: str, st: State, args: argparse.Namespace) -> None:
+    print("\n===== 阶段执行完成 =====")
     print(f"    项目 ID : {pid}")
-    print(f"    成片    : {st.get('final_video')}")
+    if st.get("final_video"):
+        print(f"    成片    : {st.get('final_video')}")
     print(f"    状态文件: {st.path}")
+    if getattr(args, "until_stage", None):
+        print(f"    （已按 --until {args.until_stage} 停下，可再次执行继续后续阶段）")
 
 
 if __name__ == "__main__":
