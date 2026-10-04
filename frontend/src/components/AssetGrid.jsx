@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -16,7 +17,9 @@ import {
 import DownloadIcon from '@mui/icons-material/Download'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import RefreshIcon from '@mui/icons-material/Refresh'
-import { fmtBytes, fmtDuration, fmtTime, statusColor } from '../api'
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined'
+import LineageChain from './LineageChain'
+import { fmtBytes, fmtDuration, fmtTime, getAssetProvenance, statusColor } from '../api'
 
 function Preview({ asset }) {
   if (!asset?.url) return null
@@ -47,6 +50,20 @@ function Preview({ asset }) {
 
 export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, showProject = false }) {
   const [detail, setDetail] = useState(null)
+  const [prov, setProv] = useState(null)
+  const [provLoading, setProvLoading] = useState(false)
+
+  /** 打开详情；withLineage=true 时顺带把血缘链拉回来（人点"血缘"按钮的路径）。 */
+  const openDetail = (asset, withLineage = false) => {
+    setDetail(asset)
+    setProv(null)
+    if (!withLineage) return
+    setProvLoading(true)
+    getAssetProvenance(asset.asset_id, 1)
+      .then(setProv)
+      .catch(() => setProv(null))
+      .finally(() => setProvLoading(false))
+  }
 
   if (!assets.length) {
     return (
@@ -74,7 +91,7 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, s
               }}
             >
               <Box
-                onClick={() => setDetail(a)}
+                onClick={() => openDetail(a)}
                 sx={{ cursor: 'pointer', bgcolor: '#f6f4fc', minHeight: 120, display: 'flex', alignItems: 'center' }}
               >
                 {['IMAGE', 'CHARACTER', 'SCENE'].includes(a.type) ? (
@@ -127,6 +144,11 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, s
                       <DownloadIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
+                  <Tooltip title="查看血缘：它是怎么来的">
+                    <IconButton size="small" onClick={() => openDetail(a, true)}>
+                      <AccountTreeOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                   {a.shot_id && onRegenerate && (
                     <Tooltip title="重新生成">
                       <span>
@@ -148,7 +170,15 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, s
         ))}
       </Grid>
 
-      <Dialog open={Boolean(detail)} onClose={() => setDetail(null)} maxWidth="md" fullWidth>
+      <Dialog
+        open={Boolean(detail)}
+        onClose={() => {
+          setDetail(null)
+          setProv(null)
+        }}
+        maxWidth="md"
+        fullWidth
+      >
         <DialogTitle>
           {detail?.name}
           <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
@@ -216,6 +246,32 @@ export default function AssetGrid({ assets = [], onDelete, onRegenerate, busy, s
                 </Stack>
               </Grid>
             </Grid>
+          )}
+
+          {detail && (
+            <Box sx={{ mt: 2 }}>
+              <Divider sx={{ mb: 2 }} />
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.4 }}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<AccountTreeOutlinedIcon />}
+                  disabled={provLoading}
+                  onClick={() => openDetail(detail, true)}
+                >
+                  {prov ? '重新取血缘' : '查看血缘链'}
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  往上是「这条产物的每一个依据」
+                </Typography>
+              </Stack>
+              {provLoading && (
+                <Stack alignItems="center" sx={{ py: 2 }}>
+                  <CircularProgress size={20} />
+                </Stack>
+              )}
+              {prov && !provLoading && <LineageChain data={prov} direction="asset" />}
+            </Box>
           )}
         </DialogContent>
       </Dialog>

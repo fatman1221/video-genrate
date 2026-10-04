@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Box,
@@ -37,12 +37,13 @@ import LogStream from '../components/LogStream'
 import FinalPanel from '../components/FinalPanel'
 import VoiceStudio from '../components/VoiceStudio'
 import ScriptStudio from '../components/ScriptStudio'
+import PromptStudio from '../components/PromptStudio'
 import {
   SKILL, deleteAsset, fmtBytes, fmtDuration, fmtTime, getTtsVoices,
   statusColor, useApi, useProjectStream,
 } from '../api'
 
-const TABS = ['概览', '脚本', '分镜', '人物', '素材', '配音', '任务', '日志', '成片']
+const TABS = ['概览', '脚本', '分镜', '人物', '素材', '配音', '提示词', '任务', '日志', '成片']
 
 const ASSET_FILTERS = [
   { value: 'ALL', label: '全部' },
@@ -118,7 +119,16 @@ function StatTile({ label, value, tone = 'default' }) {
 export default function ProjectDetail() {
   const { projectId } = useParams()
   const navigate = useNavigate()
-  const [tab, setTab] = useState(0)
+  // 标签页可从 URL 深链（?tab=6）—— 便于把「某个项目的问题所在」直接发给别人看
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabFromUrl = Number(searchParams.get('tab'))
+  const [tab, setTabState] = useState(
+    Number.isInteger(tabFromUrl) && tabFromUrl >= 0 && tabFromUrl < TABS.length ? tabFromUrl : 0,
+  )
+  const setTab = (value) => {
+    setTabState(value)
+    setSearchParams(value ? { tab: String(value) } : {}, { replace: true })
+  }
   const [busy, setBusy] = useState(false)
   const [busyShot, setBusyShot] = useState(null)
   const [liveLogs, setLiveLogs] = useState([])
@@ -647,8 +657,17 @@ export default function ProjectDetail() {
         />
       )}
 
-      {/* 6 任务 */}
+      {/* 6 提示词与血缘（只读查看器） */}
       {tab === 6 && (
+        <PromptStudio
+          projectId={projectId}
+          assets={assets}
+          notify={(type, text) => setToast({ type, text })}
+        />
+      )}
+
+      {/* 7 任务 */}
+      {tab === 7 && (
         <TaskTable
           tasks={tasks}
           onRetry={(t) => run('重新入队', SKILL.retryTask({ task_id: t.task_id, reset_attempts: true }))}
@@ -656,11 +675,11 @@ export default function ProjectDetail() {
         />
       )}
 
-      {/* 7 日志 */}
-      {tab === 7 && <LogStream logs={mergedLogs} connected={connected} height={620} />}
+      {/* 8 日志 */}
+      {tab === 8 && <LogStream logs={mergedLogs} connected={connected} height={620} />}
 
-      {/* 8 成片 */}
-      {tab === 8 && (
+      {/* 9 成片 */}
+      {tab === 9 && (
         <FinalPanel
           projectId={projectId}
           asset={overview?.final_output}

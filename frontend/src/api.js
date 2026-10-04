@@ -131,6 +131,18 @@ export const removeSeries = (seriesId, deleteEpisodes = false) =>
     .delete(`/api/series/${seriesId}`, { params: { delete_episodes: deleteEpisodes } })
     .then((r) => r.data)
 
+// ---- 提示词与血缘（drama-skills 迁移新增的只读端点）----
+/** 项目下的提示词列表，带 stale 标记与过期理由。promptType 留空即全部类型。 */
+export const getPrompts = (projectId, promptType = '') =>
+  get(`/api/projects/${projectId}/prompts`, promptType ? { prompt_type: promptType } : undefined)
+/** 提示词详情：当前版本 + 全部历史版本（只增不改）。 */
+export const getPromptDetail = (promptId) => get(`/api/prompts/${promptId}`)
+/** 从提示词向上反查（编译输入快照 + 已产出素材）。 */
+export const getPromptProvenance = (promptId) => get(`/api/prompts/${promptId}/provenance`)
+/** 从素材向上反查完整链路；depth 控制参考图递归层数（0/1/2）。 */
+export const getAssetProvenance = (assetId, depth = 1) =>
+  get(`/api/assets/${assetId}/provenance`, { depth })
+
 export const getPipeline = (projectId) => get(`/api/projects/${projectId}/pipeline`)
 
 /** 项目历史上产出的全部成片（版本对比用，按时间倒序）。 */
