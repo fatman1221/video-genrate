@@ -20,6 +20,7 @@
 
 📖 **[Wiki](https://github.com/fatman1221/video-genrate/wiki)** —— 按主题查阅（快速开始 / 核心概念 / 流水线 / 换机迁移 / 故障速查）
 📄 **本文件** —— 设计思想全文 · 🗂 **[docs/](docs/)** —— 深度设计文档
+🎬 **[docs/STUDIO_CAPABILITIES.md](docs/STUDIO_CAPABILITIES.md)** —— **Agent 调用指南**（视觉设定 / 连续性 / Prompt 编译 / 生成计划，照顺序抄即可）
 
 ---
 
@@ -376,6 +377,32 @@ Agent: POST /api/skills/generate_video/invoke  { shot_id: "shot_03" }
 **注意这条链路上每一环都在做记录** —— 这才是"可观察、可回退、可追溯"的实现方式，
 而不是靠 Agent 自己记住。
 
+### 4.5 更细的创作控制：设定 → 编译 → 计划
+
+上面那条链路是"能出片"的最小闭环。需要**跨镜人物一致、连续性可控、产物可反查**时，
+在它之上还有一层（对应 `docs/DRAMA_SKILLS_MIGRATION.md` 的设计、`docs/STUDIO_CAPABILITIES.md` 的用法）：
+
+```
+① create_visual_bible          视觉设定基线（时代锚点 / 全局规则 / 文字政策）
+② create_style → set_current_style
+③ create_character → set_character_identity → create_look   （身份 → 造型变体）
+   create_location  → create_location_view
+   create_prop      → create_prop_state
+④ create_continuity_lock       把"永远不变的东西"锁成最小名词短语（逐字进正向正文才算数）
+⑤ set_shot_bindings            把镜头绑到实体上
+⑥ compile_image_prompt         编译 → 落一条 PromptVersion（**只增不改**）
+⑦ check_prompt_staleness       改过设定后，问一句"哪些镜头要重出"
+⑧ create_generation_plan → preview → confirm → materialize
+                               前三步不花钱、也不建任务；**只有物化才花钱**
+⑨ get_asset_provenance         产物出来后反查"它到底是怎么来的"
+```
+
+**四条纪律**：新层是唯一事实来源（旧字段 `Shot.image_prompt` 等只是**单向兼容投影**，只写不读）·
+Prompt 只增不改（STALE 动态判定）· 锁面是名词短语 · 预览与确认不花钱。
+
+> 完整的入参 / 返回 / 硬失败清单 / 常见坑，见
+> **[docs/STUDIO_CAPABILITIES.md](docs/STUDIO_CAPABILITIES.md)**。
+
 ---
 
 ## 五、怎么扩展
@@ -590,17 +617,30 @@ video-skill/
 ├── wiki/                           ★ GitHub Wiki 源文件（用 scripts/publish_wiki.sh 发布）
 ├── intro.html                      项目介绍页（单文件、零外部依赖）
 ├── local-postgres/                 自带 PostgreSQL
-└── docs/                           ARCHITECTURE / COMFYUI_QWEN / PIPELINE_NODES /
-                                    SERIES / VERIFICATION / MIGRATION
+└── docs/                           ARCHITECTURE / COMFYUI_QWEN / PIPELINE_NODES / SERIES /
+                                    VERIFICATION / MIGRATION / DRAMA_SKILLS_MIGRATION /
+                                    STUDIO_CAPABILITIES
 ```
 
-### 数据模型（15 张表）
+### 数据模型（29 张表）
+
+**基础层（15）**
 
 `series` `projects` `scripts` `storyboards` `scenes` `shots` `characters` `assets`
 `tasks` `workflows` `workflow_steps` `agent_logs` `quality_checks` `providers` `browser_tasks`
 
+**视觉设定 / 编译层（14）**
+
+`visual_bibles` `visual_styles` `script_sections` `locations` `location_views`
+`props` `prop_states` `character_looks` `continuity_locks` `continuity_deltas`
+`prompts` `prompt_versions` `generation_plans` `generation_plan_items`
+
 - 二进制文件**不入库**，数据库只存 `file_path` + `url`
 - `shots` 是核心实体：image / video / voice / subtitle 各自的 `*_asset_id` 与状态独立
+- 编译层把「**设定**」与「**这一次生成**」拆开：设定落在
+  `visual_bibles` / `character_looks` / `location_views` / `prop_states`，
+  一次编译落一条 `prompt_versions`（**只增不改**），产物回填 `prompt_version_id` 形成血缘闭环。
+  详见 [docs/STUDIO_CAPABILITIES.md](docs/STUDIO_CAPABILITIES.md)
 - `assets.project_id` **可为空**：表示资产库里独立生成/保存的素材（例如直接合成的语音），
   落在 `storage/{类型}/_library/`，不属于任何项目
 - `tasks` 即任务队列：状态、进度、尝试次数、错误详情、逐条日志
@@ -641,10 +681,14 @@ VIDEO_GENERATED → QUALITY_CHECK → FAILED → ANALYZE → REGENERATE → QUAL
 | ComfyUI / 云端 Provider | ⚙️ 适配器就绪，需配置地址与密钥 |
 | Face Enhancement（GFPGAN 等） | ⚙️ 算子已预留，未接模型时明确返回 `skipped` |
 | 浏览器自动化 | ✅ 任务登记 + playbook；实际执行由 Agent 完成 |
+| 视觉设定 / 连续性 / Prompt 编译 / 生成计划 | ✅ 服务层 + 30 个 Skill + 8 个只读端点；2K 真实出图已验证（`characters` 等 14 张表） |
 
 > **验收状态：已通过**（2026-09-26）。端到端 23 个任务 0 失败，
 > 产出真实成片（H.264 + AAC），工作流到达 `COMPLETED`。
 > 详见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
+
+> **测试**：`cd backend && unset PYTHONPATH && ../.venv/Scripts/python.exe -m pytest`
+> （140 用例，不需要 GPU；`-m gpu` 跑真实出图）。
 
 ---
 
