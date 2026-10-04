@@ -178,3 +178,48 @@ def test_same_code_allowed_across_projects(db, fx):
     db.add(m.Character(project_id=fx.project.id, name="己", role="支持", code="CROSS"))
     db.add(m.Character(project_id=other.id, name="庚", role="支持", code="CROSS"))
     db.flush()  # 唯一性按 project_id 分组，跨项目同 code 应放行
+
+
+# --------------------------------------------------------------------------- #
+# 老字段覆盖守卫：编译过之后 ``prompt`` 覆盖不再生效，且**不静默**
+# --------------------------------------------------------------------------- #
+def test_legacy_override_allowed_when_uncompiled(db, fx):
+    """没编译过 → 老链路照旧：``prompt`` 写进 ``shot.image_prompt`` 并生效。"""
+    from app.skills import generation_skills as gs
+
+    assert gs._legacy_override_warning(db, fx.shot, "image", "手工提示词") is None
+
+
+def test_legacy_override_warns_when_compiled(db, fx):
+    """⚠️ 一旦编译过，``generate_image(prompt=...)`` 写的老字段**不参与生成**。
+
+    新层是唯一事实来源，老字段退化为「只写不读」的投影 ——
+    静默忽略会让人以为「我改了提示词」，实际出图一字未变。
+    """
+    from app.services import prompt_compiler as pc
+    from app.skills import generation_skills as gs
+
+    pc.compile_prompt(db, fx.shot, prompt_type="image", options={"provider": "comfyui"})
+    db.flush()
+    warning = gs._legacy_override_warning(db, fx.shot, "image", "手工提示词")
+    assert warning and "不参与生成" in warning
+    assert "compile_image_prompt" in warning
+
+
+def test_legacy_override_is_per_prompt_type(db, fx):
+    """image 编译过，不影响 video 侧的老字段覆盖（两种类型互不干扰）。"""
+    from app.services import prompt_compiler as pc
+    from app.skills import generation_skills as gs
+
+    pc.compile_prompt(db, fx.shot, prompt_type="image", options={"provider": "comfyui"})
+    db.flush()
+    assert gs._legacy_override_warning(db, fx.shot, "video", "手工视频提示词") is None
+
+
+def test_legacy_override_noop_without_prompt(db, fx):
+    from app.services import prompt_compiler as pc
+    from app.skills import generation_skills as gs
+
+    pc.compile_prompt(db, fx.shot, prompt_type="image", options={"provider": "comfyui"})
+    db.flush()
+    assert gs._legacy_override_warning(db, fx.shot, "image", None) is None

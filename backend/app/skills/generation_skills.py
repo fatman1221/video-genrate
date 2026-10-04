@@ -32,6 +32,38 @@ def _shot(db, shot_id: str) -> Shot:
     return shot
 
 
+def _compiled_prompt_exists(db, shot: Shot, prompt_type: str) -> bool:
+    """该镜头是否已有编译产物（新层是唯一事实来源）。"""
+    from ..models import Prompt
+
+    return db.execute(
+        select(Prompt.id).where(
+            Prompt.shot_id == shot.id, Prompt.type == prompt_type,
+            Prompt.current_version_id.isnot(None),
+        ).limit(1)
+    ).first() is not None
+
+
+def _legacy_override_warning(db, shot: Shot, prompt_type: str, prompt: str | None) -> str | None:
+    """老字段 ``prompt`` 覆盖的守卫：返回警告文本表示**本次覆盖无效**。
+
+    ``generate_image`` / ``generate_video`` 上的 ``prompt`` 参数是**老链路**的入口
+    （直接写 ``Shot.image_prompt``）。一旦该镜头编译过提示词，处理器只会读编译产物，
+    老字段彻底退化为「只写不读」的兼容投影 —— 此时：
+
+    * 覆盖**不参与生成**（新层优先）；
+    * 连投影也**不写**：写进去会让 Shot 老字段与实际生成依据不一致，
+      后来人反查时会被误导。
+
+    两条都不做静默处理，而是把警告随返回值带回给调用方。
+    """
+    if prompt and _compiled_prompt_exists(db, shot, prompt_type):
+        return (f"该镜头已编译过 {prompt_type} 提示词（新层为唯一事实来源），"
+                f"传入的 prompt 不参与生成、也未写入兼容投影；"
+                f"要改提示词请用 compile_{prompt_type}_prompt 重新编译。")
+    return None
+
+
 def _prepare_image_size(db, project: Project, *, provider: str | None,
                         resolution: Any, aspect_ratio: Any,
                         width: int | None, height: int | None) -> dict[str, Any]:
@@ -96,7 +128,8 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
     project = _project(ctx.db, project_id or shot.project_id)
     size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
                                aspect_ratio=aspect_ratio, width=width, height=height)
-    if prompt:
+    override_warning = _legacy_override_warning(ctx.db, shot, "image", prompt)
+    if prompt and override_warning is None:
         # ⚠️ 兼容投影：既有链路仍从 Shot 读提示词；新链路请走 compile_image_prompt
         shot.image_prompt = prompt
     task = tasks_svc.create_task(
@@ -114,7 +147,7 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
         "size": {k: size[k] for k in ("resolution", "aspect_ratio", "width", "height",
                                       "megapixels", "above_native")},
         "provider": size["provider"], "provider_note": size["provider_note"],
-        "warnings": size["warnings"],
+        "warnings": list(size["warnings"]) + ([override_warning] if override_warning else []),
     }
 
 
@@ -144,7 +177,8 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
     project = _project(ctx.db, shot.project_id)
     size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
                                aspect_ratio=aspect_ratio, width=width, height=height)
-    if prompt:
+    override_warning = _legacy_override_warning(ctx.db, shot, "image", prompt)
+    if prompt and override_warning is None:
         shot.image_prompt = prompt
     shot.image_asset_id = None
     shot.image_status = "PENDING"
@@ -163,7 +197,7 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
         "size": {k: size[k] for k in ("resolution", "aspect_ratio", "width", "height",
                                       "megapixels", "above_native")},
         "provider": size["provider"], "provider_note": size["provider_note"],
-        "warnings": size["warnings"],
+        "warnings": list(size["warnings"]) + ([override_warning] if override_warning else []),
     }
 
 
@@ -220,15 +254,18 @@ def generate_video(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
                    duration: float | None = None, fps: int | None = None,
                    motion: str | None = None, seed: int | None = None):
     shot = _shot(ctx.db, shot_id)
-    if prompt:
+    override_warning = _legacy_override_warning(ctx.db, shot, "video", prompt)
+    if prompt and override_warning is None:
         shot.video_prompt = prompt
-    return tasks_svc.create_task(
+    task = tasks_svc.create_task(
         ctx.db, project_id=project_id or shot.project_id, type=TaskType.GENERATE_VIDEO,
         name=f"生成视频 {shot.code}", shot_id=shot.id,
         payload={"provider": provider, "duration": duration, "fps": fps,
                  "motion": motion, "seed": seed},
         created_by=ctx.actor, commit=False,
     )
+    return task, {"shot_id": shot.id,
+                  "warnings": [override_warning] if override_warning else []}
 
 
 @skill(
@@ -247,20 +284,23 @@ def regenerate_video(ctx: SkillContext, *, shot_id: str, provider: str | None = 
                      motion: str | None = None, seed: int | None = None,
                      reason: str = ""):
     shot = _shot(ctx.db, shot_id)
-    if prompt:
+    override_warning = _legacy_override_warning(ctx.db, shot, "video", prompt)
+    if prompt and override_warning is None:
         shot.video_prompt = prompt
     shot.video_asset_id = None
     shot.video_status = "PENDING"
     shot.status = ShotStatus.PENDING
     shot.retry_count = (shot.retry_count or 0) + 1
     shot.last_error = reason
-    return tasks_svc.create_task(
+    task = tasks_svc.create_task(
         ctx.db, project_id=shot.project_id, type=TaskType.GENERATE_VIDEO,
         name=f"重生成视频 {shot.code}", shot_id=shot.id,
         payload={"provider": provider, "duration": duration, "motion": motion,
                  "seed": seed, "regenerate": True, "reason": reason},
         created_by=ctx.actor, commit=False,
     )
+    return task, {"shot_id": shot.id,
+                  "warnings": [override_warning] if override_warning else []}
 
 
 @skill(

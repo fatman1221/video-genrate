@@ -15,11 +15,20 @@
                             │ 唯一入口：/api/skills（JSON Schema 契约）
 ┌───────────────────────────▼──────────────────────────────────────────┐
 │ L2  Skill 层        backend/app/skills                                │
-│                     89 个 Skill，按 project/script/storyboard/        │
+│                     124 个 Skill，按 project/script/storyboard/       │
 │                     series/character/image/video/audio/subtitle/      │
 │                     processing/quality/workflow/asset/task/log/       │
-│                     provider/browser/orchestration 分类               │
+│                     provider/browser/orchestration/visual/plan 分类   │
 │                     职责：参数校验、权限/确认、编排、返回统一结构      │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ 视觉设定 / 连续性 / Prompt 编译 / 生成计划
+┌───────────────────────────▼──────────────────────────────────────────┐
+│ L2.5 创作服务层     backend/app/services                              │
+│                     visual_bible · continuity · prompt_compiler ·     │
+│                     provenance · generation_plans · resolution        │
+│                     职责：把「设定」编译成「提示词版本」，            │
+│                     并保证每次生成都有可反查的血缘与不花钱的预览闸门  │
+│                     （用法见 docs/STUDIO_CAPABILITIES.md）            │
 └───────────────────────────┬──────────────────────────────────────────┘
                             │ 提交 Task（异步）或直接返回数据（同步）
 ┌───────────────────────────▼──────────────────────────────────────────┐

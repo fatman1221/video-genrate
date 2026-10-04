@@ -1467,12 +1467,12 @@ unset PYTHONPATH
 | `test_provenance.py` | 血缘反查 | 七个必备节点齐全；链路**带得出当时的正文**、编译输入快照、锁、参考图；孤立产物 → `complete=False` 且**列出缺什么** |
 | `test_hygiene.py` | 正文卫生 + 文字政策 | 10 类禁止内容（引擎语法/哈希/字段路径/内部代号/流程说明）全拒；**失败不留半成品**；`exact_readable` 缺文字被拒；`readable` 与「全局无文字」**不可共存** |
 | `test_resolution.py` | 档位解析 + 能力闸门 | 别名归一（`2160p`→`4K`）；**2K 预设对齐官方尺寸**；超原生**放行但告警**；未声明能力的 provider **不被误伤** |
-| `test_backward_compat.py` | 单向兼容投影 | `character_ids` 回写的是**角色 id 而非名字**（否则人物一致性静默失效）；老字段仍可读；**新层压过被投毒的老字段**；部分唯一索引语义（空 code 不拦、非空重复才拦、跨项目放行） |
+| `test_backward_compat.py` | 单向兼容投影 | `character_ids` 回写的是**角色 id 而非名字**（否则人物一致性静默失效）；老字段仍可读；**新层压过被投毒的老字段**；部分唯一索引语义（空 code 不拦、非空重复才拦、跨项目放行）；**编译后老字段 `prompt` 覆盖被拒并告警**（§14.2） |
 | `test_api_surface.py` | 对外契约 | 30 个新 Skill 全部注册且**每个都有 `input_schema`**；8 个只读端点 200；`bootstrap_project` 在干净库可跑（**索引回归门禁**）；`compile_image_prompt` 传可选字段不崩（**参数打包回归门禁**） |
 | `test_pipeline_local.py` | 出图链路端到端（CPU） | 用 `local` Provider **真跑任务**：产物用**编译正文**而非被投毒的老字段；产物挂 `prompt_version_id` 且 `/provenance` 判定完整；未编译时回落老字段；**档位真的落到产物宽高** |
 | `test_gpu_comfy_image.py` | 真实 ComfyUI（`-m gpu`） | 2K 走通「档位 → 模板 → 产物尺寸」三环一致；ComfyUI 不可达则 **skip 而非 fail** |
 
-**现状：`140 passed, 1 deselected`（默认套件 6.8s）。**
+**现状：`144 passed, 1 deselected`（默认套件 6.8s）。**
 
 迁移相关模块覆盖率：`continuity 81%` / `generation_plans 82%` / `prompt_compiler 80%` /
 `provenance 87%` / `resolution 87%` / `visual_bible 79%`。
@@ -1525,8 +1525,8 @@ unset PYTHONPATH
 | **8** | Skill / API | 30 个新 Skill + 8 个读接口 | ✅ 已完成（Skill 94→124，`visual=12/plan=7/image=5/character=2/storyboard=2/asset=1/video=1`；8 个只读端点全部 200；68 项隔离库回归断言通过；**并修掉一个由本次迁移引入的回归**：`characters(project_id, code)` 全量唯一索引打挂不写 code 的既有 `bootstrap_project` → 改部分唯一索引 `WHERE code != ''`） |
 | **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | ✅ 已完成（新增 `services/resolution.py`；3 个出图 Skill 支持 `resolution`/`aspect_ratio`；`_ensure_shot_image`/`handle_generate_video` 改为「编译产物优先、老字段兜底」；产物回填 `prompt_version_id` 闭合血缘。隔离库 E2E **41 项断言通过**；真实 ComfyUI 2K 出图成功（2752×1536 / 130s）。**4K 闸门验证有效但暂不作为默认档位**，见 §8.4） |
 | **10** | **测试** | pytest 全套 14 类 | ✅ 已完成（`backend/tests/` 12 个文件、**140 passed / 1 deselected**（默认套件 6.8s，不含 GPU）；新增 `requirements-dev.txt` + `pytest.ini`；临时 harness 全部并入 pytest 后删除；迁移相关模块覆盖率 79–87%） |
-| **11** | 文档 | 更新 README / ARCHITECTURE / Agent 调用指南 | — |
-| **12** | **最终 Review** | 逐 Phase 复查 + 旧功能回归 | `e2e_check.py` 通过 |
+| **11** | 文档 | 更新 README / ARCHITECTURE / Agent 调用指南 | ✅ 已完成（新增 **`docs/STUDIO_CAPABILITIES.md`**：Agent 调用指南，含典型链路、每个 Skill 的入参/返回、四条纪律、闸门语义、常见坑、命令速查；README 补索引 + 数据模型 15→**29 张表** + 新增 §4.5「设定 → 编译 → 计划」链路） |
+| **12** | **最终 Review** | 逐 Phase 复查 + 旧功能回归 | ✅ 已完成（见 §14：`144 passed / 1 deselected`；Skill **124**、TaskType 20 声明 vs **16** 可用 handler、29 张表逐一核对；**发现并修掉 1 个静默失效**） |
 
 **每个 Phase 结束必做的回归**：
 1. `scripts/e2e_check.py` 通过（现有链路未坏）
@@ -1543,6 +1543,7 @@ unset PYTHONPATH
 |---|---|---|
 | `Shot` 加 11 列导致现有 handler 混乱 | 中 | 新列全部可空；现有 handler 只读旧字段；新逻辑走新 service |
 | Prompt 单向回写（实体 → `Shot.image_prompt` 镜像）出现偏差 | 低 | 镜像**不参与任何读取路径**，偏差只影响未迁移的老消费者看到过期内容；回写入口唯一（`_mirror_to_shot()`），并提供校验 Skill 比对 |
+| ⚠️ 老字段 `prompt` 覆盖在编译后**静默失效**（还污染投影） | **高** | Phase 12 复查发现并已修：编译产物存在时**拒绝写入 + 返回警告**，4 条用例锁定。见 §14.2 |
 | 10 张新表让 Schema 复杂化 | 中 | 每个新表都必须被至少一个 Skill 使用，否则不建 |
 | SQLite 下无外键约束 | 低 | 与现状一致；由 service 层校验 |
 | 4050 行量级的改动难以 review | 高 | **严格按 Phase 提交，每 Phase 独立可回滚** |
@@ -1557,7 +1558,8 @@ unset PYTHONPATH
 - ❌ 不把 Agent 逻辑塞进 Backend Runtime
 - ❌ 不为凑数建 CRUD API
 - ❌ 不在产物里存手填哈希
-- ❌ 不做视频超分（本轮只做 4K 生图）
+- ❌ 不做视频超分（本轮只做生图档位；4K 通道可用但**不作为默认档位** —— 16GB 显存下过慢，
+  且成片三环都在 90–106 万像素，2K 已是原生上限。用户裁定：「暂时不用 4K，要的是完善」）
 - ❌ 不改数据库类型（继续 SQLite，Postgres 兼容保留）
 
 ### 13.3 完成标准（用户给定）
@@ -1591,6 +1593,51 @@ unset PYTHONPATH
 > 旧字段（`Shot.image_prompt` / `Shot.video_prompt` / `Shot.negative_prompt` /
 > `Shot.character_ids` / `Shot.location`）**降级为「单向兼容投影」**：
 > 由新层在写入时回写一份供老消费者读，**任何新逻辑一律不读旧字段**。
+
+---
+
+## 14. Phase 12 最终 Review 结论
+
+### 14.1 逐 Phase 复查
+
+| 复查项 | 证据 | 结论 |
+|---|---|---|
+| 数据层未被破坏 | 29 张表全部存在（15 既有 + 14 新增），既有无一删除 | ✅ |
+| 老库升级路径幂等 | 老库（16 表）→ 29 表，重复执行 `init_db()` 无副作用 | ✅ |
+| 老 Skill 全部可用 | `GET /api/skills` = **124** 个；144 个 pytest 用例覆盖既有链路（`test_api_surface` / `test_pipeline_local` / `test_backward_compat`） | ✅ |
+| handler 覆盖 | `TaskType` 声明 20 个，**可用 handler 16 个** —— 与迁移前一致（`ADD_VOICE/ADD_MUSIC/ADD_SFX/ADD_SUBTITLE` 本就只有枚举无实现，非本次回归） | ✅ |
+| 单向投影只写不读 | 回写入口收敛在 3 处：`prompt_compiler._mirror_to_shot`（提示词/负向词）、`visual_bible.set_shot_bindings`（`character_ids`）、`set_shot_location`（`location`）。**读取点只有 2 处**，且都在「该镜头没有编译产物」的分支里（`handlers._ensure_shot_image` / `handle_generate_video`） | ✅ |
+| Prompt 只增不改 | `test_prompt_version.py` 锁定 v1 不被就地修改 | ✅ |
+| 血缘闭环 | 产物回填 `prompt_version_id`；2K 真实出图后端到端反查通过 | ✅ |
+| 闸门语义 | 预览零消耗、指纹不符即拒、重复物化被拒、PLAN 态拒投产 | ✅ |
+
+### 14.2 本次 Review **发现并修掉**的问题
+
+**⚠️ 老字段 `prompt` 覆盖在编译后静默失效。**
+
+`generate_image` / `regenerate_image` / `generate_video` / `regenerate_video` 都带一个
+`prompt` 入参（老链路：直接写 `shot.image_prompt`）。一旦该镜头编译过提示词，
+handler 只读编译产物 —— 这个覆盖**不参与生成**，但**既不报错也不告警**，
+还顺手把 `shot.image_prompt` 改成了与实际生成依据不符的内容。
+调用方会合理认为「我改了提示词」，实际出图一字未变 —— 与 §13.1 里那条
+"单向回写出现偏差"的风险同源，但后果更重：**投影与实际依据不一致，反查会被误导**。
+
+修法（对齐「不静默」原则）：
+
+- 新增 `generation_skills._legacy_override_warning()` —— 编译产物存在时**拒绝写入**并返回警告；
+- 警告随返回值带回：出图走 `warnings[]`，出视频新增 `warnings[]` 字段（**只增字段，不改既有键**）；
+- 4 条用例锁定（`test_backward_compat.py`）：未编译时放行、编译后告警、按
+  `prompt_type` 隔离、不传 `prompt` 时无副作用。
+
+### 14.3 最终回归
+
+```
+cd backend && unset PYTHONPATH && ../.venv/Scripts/python.exe -m pytest
+→ 144 passed, 1 deselected in 6.86s        （默认套件不含 GPU；-m gpu 跑真实出图）
+```
+
+计数基线：Skill **124**（94 → +30）· 数据表 **29**（15 → +14）· 只读端点 **8** ·
+迁移相关模块覆盖率 79–87%。
 > 不做「双向同步 / 对等双写」，因此不存在两套真相互相打架的问题。
 
 | # | 决策 | 结论 |
