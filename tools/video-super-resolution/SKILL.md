@@ -1,6 +1,6 @@
 ---
 name: video-super-resolution
-description: 用 Real-ESRGAN 给视频做超分（放大 + 重建细节）的落地要点：为什么选 ncnn-vulkan 单文件版而不是 pip 的 realesrgan、视频该用哪个模型（animevideov3 vs x4plus，实测差 17 倍）、分块流水线如何把 x4 的 82GB 临时帧压到几 GB、音轨/帧数怎么保证不丢、以及「超分完尺寸翻倍但看不出变化」时该怎么查。当需要把视频放大到 2K/4K、AI 生成的视频/图片不够清晰、成片分辨率偏低、或要判断「值不值得超分 / 该花多少时间」时使用。
+description: 用 Real-ESRGAN 给视频和图片做超分（放大 + 重建细节）的落地要点：为什么选 ncnn-vulkan 单文件版而不是 pip 的 realesrgan、该用哪个模型（animevideov3 vs 照片向的 x4plus）、视频的分块流水线如何把 x4 的 82GB 临时帧压到几 GB、音轨/帧数怎么保证不丢、图片如何一步 2K 变 4K、以及「超分完尺寸翻倍但看不出变化 / 缩小后反而变糊」时该怎么查。当需要把视频或照片放大到 2K/4K、AI 生成的视频/图片不够清晰、成片分辨率偏低、或要判断「值不值得超分 / 该花多少时间」时使用。
 agent_created: true
 ---
 
@@ -70,6 +70,41 @@ python scripts/upscale_video.py -i in.mp4 -o cmp.png --compare 12.5 -s 2
   检查     尺寸 ✓   帧率 ✓   音轨 ✓   时长差 +0.04s   帧数 源 146 / 成片 146 ✓
 ```
 
+## 三·B、图片超分（2K 照片 → 4K）：同一工具直接吃图片
+
+图片比视频简单得多 —— **不需要抽帧/拼接/音轨**，exe 直接读写图片，
+所以**不用走 `upscale_video.py`**，一条命令即可：
+
+```bash
+cd ~/.workbuddy/tools/realesrgan-ncnn-vulkan
+./realesrgan-ncnn-vulkan.exe -i in.png -o out.png -s 4 -n realesrgan-x4plus -m models
+```
+
+`-i` / `-o` 也接受**目录**（批量）与 jpg/png/webp；`-x` 开 TTA（更慢更干净）。
+
+**「2K → 4K」的正确参数**：4K 指长边 3840，不是无脑 x2。竖版 2K（如 1792x2400）
+要精确的 4K 竖版 2880x3840：先 `-s 4` 出 4 倍图，再缩到位：
+
+```bash
+ffmpeg -i x4.png -vf scale=2880:3840:flags=lanczos -q:v 1 out_4k.png
+```
+
+**照片要用 x4plus，不是视频用的 animevideov3**：
+
+| 路径 | 输出 | 实测耗时 | 观感 |
+|---|---|---|---|
+| `-s 2 -n realesr-animevideov3` | 3584x4800 | **3 s** | 快，保留原图颗粒感 |
+| `-s 4 -n realesrgan-x4plus` → 缩到 3840 | 2880x3840 | **13 s** + 4 s | 干净，眉发/睫毛结构被重建 |
+
+实测样本 4.3MP（1792x2400）：x4plus 出 7168x9600 中间图约 57MB，磁盘够就没问题。
+
+⚠️ **别被「缩小后反而看着变糊」骗了**。x4plus 出 7168x9600 再缩到 2880x3840，
+肉眼看比 x2 结果更「光滑」，很像磨皮。**必须在 4x 原生尺度做 1:1 比对才公平** ——
+那时左边 Lanczos x4 是满脸被放大的噪点、眉毛糊成一团，右边 x4plus 的眉毛是一根根
+发丝、睫毛和双眼皮褶都清晰。**它同时做了两件事：清掉被放大的噪点 + 真的重建结构。**
+→ 判断图片超分质量，**务必在与模型输出同尺度下 1:1 比对**；
+跨尺度缩小后再比，会得出完全相反的结论（这个坑我踩过）。
+
 ## 四、模型选型（实测，1280x720 输入）
 
 | 模型 | 体积 | 支持倍数 | 单帧耗时 | 说明 |
@@ -81,6 +116,10 @@ python scripts/upscale_video.py -i in.mp4 -o cmp.png --compare 12.5 -s 2
 ⚠️ **x4plus 的 41.7s 是在显存只剩 584MB 时测的**（ComfyUI 占着 15GB）。ncnn 会自动切小
 tile 硬扛，代价就是 17 倍慢。要用 x4plus 就先把显存腾出来。**轻量模型在显存紧张时几乎不受影响**，
 这也是默认选它的第二个理由。
+
+✅ **补充实测（显存空闲时）**：`x4plus` 处理 1792x2400（4.3MP，比 1280x720 大 4.7 倍）
+→ 7168x9600 只要 **13 秒**。所以 41.7s 完全是显存被占的产物，**模型本身并不慢** ——
+照片场景可以放心用 x4plus。反过来也说明：看到 x4plus「极慢」时，先查显存，别急着换模型。
 
 ⚠️ **模型与倍数必须匹配**（`-s 2 -n realesrgan-x4plus` 会在跑起来之后才报错）。脚本已在校验：
 x4plus 只支持 4，`realesr-animevideov3` 支持 2/3/4。
