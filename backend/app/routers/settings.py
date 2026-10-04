@@ -50,7 +50,8 @@ def update_provider_settings(payload: dict[str, Any] = Body(...),
 
 
 @router.get("/voices")
-def list_tts_voices(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
+def list_tts_voices(limit: int = Query(200, ge=1, le=1000),
+                    refresh: bool = Query(False, description="忽略缓存，重新枚举本机音色")) -> dict[str, Any]:
     """本机可用的 TTS 音色与引擎清单（配音调音台 / 素材中心生成语音时使用）。
 
     - ``voices``：扁平音色名列表（兼容旧调用方）
@@ -58,8 +59,8 @@ def list_tts_voices(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
       前端据此渲染音色下拉与「情感指令」输入框，不硬编码任何音色名
     - ``music_styles``：BGM 可选曲风（对应 scripts/gen_bgm.py 的 --style）
     """
-    voices = available_voices()
-    engines = tts_engines()
+    voices = available_voices(refresh=refresh)
+    engines = tts_engines(refresh=refresh)
     return {
         "voices": voices[:limit],
         "total": len(voices),

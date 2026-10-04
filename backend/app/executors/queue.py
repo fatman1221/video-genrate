@@ -12,7 +12,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -88,23 +88,49 @@ def _utcnow() -> datetime:
 
 
 def claim_next(db: Session) -> Task | None:
-    """领取一个可执行任务。"""
+    """领取一个可执行任务。
+
+    注意：**必须用「条件 UPDATE + 校验影响行数」来抢占**，不能只靠
+    SELECT 之后再改状态。SQLite 没有 SELECT ... FOR UPDATE，
+    多个 worker 线程会同时 SELECT 到同一个 PENDING 任务、各自把它置为
+    RUNNING，然后**同一个任务被并行执行两遍** —— 表现为产物凭空翻倍
+    （例如一次出 8 张定妆候选，库里却多了 16 张），而任务状态是 SUCCESS，
+    日志因为双方互相覆盖只留一份，极难察觉。
+
+    Postgres 分支保留 skip_locked 以减少无谓争抢，但正确性同样依赖下面的
+    原子 UPDATE。
+    """
     stmt = (
-        select(Task)
+        select(Task.id)
         .where(Task.status == TaskStatus.PENDING)
         .order_by(Task.priority.desc(), Task.created_at.asc())
         .limit(1)
     )
     if settings.is_postgres:
         stmt = stmt.with_for_update(skip_locked=True)
-    task = db.execute(stmt).scalars().first()
-    if task is None:
+    task_id = db.execute(stmt).scalars().first()
+    if task_id is None:
         return None
-    task.status = TaskStatus.RUNNING
-    task.started_at = _utcnow()
-    task.worker = f"{settings.app_name}-{threading.get_ident()}"
-    task.attempts = (task.attempts or 0) + 1
-    task.progress = max(task.progress or 0, 1)
+
+    claimed = db.execute(
+        update(Task)
+        .where(Task.id == task_id, Task.status == TaskStatus.PENDING)
+        .values(
+            status=TaskStatus.RUNNING,
+            started_at=_utcnow(),
+            worker=f"{settings.app_name}-{threading.get_ident()}",
+            attempts=Task.attempts + 1,
+            progress=1,
+        )
+    )
+    db.commit()
+    if claimed.rowcount != 1:
+        # 已被别的 worker 抢走，本轮当作没活干，避免重复执行
+        return None
+
+    task = db.get(Task, task_id)
+    if task is None:  # pragma: no cover
+        return None
     task.append_log("任务开始执行")
     db.commit()
     db.refresh(task)

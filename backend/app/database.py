@@ -36,6 +36,9 @@ if not settings.is_postgres:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
+        # 多 worker 线程会并发写同一张 tasks 表，没有 busy_timeout 时
+        # 后到的写会直接抛 "database is locked"，表现为任务莫名失败。
+        cursor.execute("PRAGMA busy_timeout=15000")
         cursor.close()
 
 

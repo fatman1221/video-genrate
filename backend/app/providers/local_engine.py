@@ -540,7 +540,14 @@ def mix_audio_tracks(*, video_path: str, tracks: list[dict[str, Any]],
         "-filter_complex", ";".join(filters),
         "-map", "0:v", "-map", "[aout]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-shortest", "-movflags", "+faststart", out_path,
+        # 用 -t <片长> 收尾，**不要用 -shortest**。两点原因：
+        #  1) 音频若比画面短（旁白只到 248s 而片子 301s、或压根没配乐），
+        #     -shortest 会就着短的那条把**画面也一起砍掉**，成片莫名提前结束且不报错。
+        #     -t 只截长不截短，画面永远是完整的。
+        #  2) 曾试过给音频加 apad 再配 -shortest，结果是 ffmpeg 在片尾**挂住不动**
+        #     （实测停在 300.5s/301.2s 不再推进），最终以 AVERROR(ENOSPC)=-28 退出。
+        "-t", f"{total:.3f}",
+        "-movflags", "+faststart", out_path,
     ]
     run_ffmpeg(args, progress_cb=progress_cb, total_duration=total, label="混音")
     return out_path
@@ -767,8 +774,41 @@ def tts_available() -> bool:
     return bool(IS_WINDOWS and POWERSHELL)
 
 
-def list_voices() -> list[str]:
-    """列出本机各通道可用音色（用于界面下拉）。"""
+# 音色清单缓存：list_voices() 会调 PowerShell 枚举系统音色、并发起 edge-tts 网络请求，
+# 单次耗时 3s 左右。Web UI 每次进项目 / 切到配音页都会拉一次，不缓存会让音色下拉
+# 空白好几秒（用户以为功能坏了）。清单本身几乎不变，缓存 10 分钟足够，且支持强制刷新。
+_VOICE_CACHE: dict[str, Any] = {"at": 0.0, "voices": None}
+_VOICE_CACHE_TTL = 600.0
+_VOICE_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_voice_cache() -> None:
+    """清空音色清单缓存（设置页改过系统音色后调用）。"""
+    with _VOICE_CACHE_LOCK:
+        _VOICE_CACHE["at"] = 0.0
+        _VOICE_CACHE["voices"] = None
+
+
+def list_voices(*, refresh: bool = False) -> list[str]:
+    """列出本机各通道可用音色（用于界面下拉）。结果带 TTL 缓存。"""
+    with _VOICE_CACHE_LOCK:
+        cached = _VOICE_CACHE["voices"]
+        fresh = (time.time() - float(_VOICE_CACHE["at"])) < _VOICE_CACHE_TTL
+        if cached is not None and fresh and not refresh:
+            return list(cached)
+
+    voices = _list_voices_uncached()
+
+    with _VOICE_CACHE_LOCK:
+        # 只缓存非空结果，避免 TTS 通道临时不可用时把空清单钉死 10 分钟
+        if voices:
+            _VOICE_CACHE["voices"] = list(voices)
+            _VOICE_CACHE["at"] = time.time()
+    return voices
+
+
+def _list_voices_uncached() -> list[str]:
+    """真正去各通道枚举音色（较慢，被 list_voices 缓存）。"""
     voices: list[str] = []
     if IS_MACOS and Path(SAY).exists():
         try:

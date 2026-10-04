@@ -15,7 +15,7 @@ from ..config import settings
 from ..core.constants import (
     AssetType, SceneStatus, ShotStatus, TaskType,
 )
-from ..models import Asset, Character, Project, Scene, Shot
+from ..models import Asset, Character, Project, Scene, Shot, Task
 from ..providers import register_all, registry
 from ..providers import local_engine as engine
 from ..services import assets as assets_svc
@@ -96,14 +96,21 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
             return existing
 
     payload = ctx.task.payload or {}
-    provider_name = payload.get("image_provider") or settings.default_provider_image
+    proj_extra = project.extra if isinstance(project.extra, dict) else {}
+    # 出图 provider 三级优先：任务显式指定 > 项目固化配置（set_image_provider 写入
+    # project.extra）> 全局默认。
+    # 注意：调用方（generate_image / generate_all_images / 工作流重跑）传的键是
+    # "provider"，历史实现只读 "image_provider" —— 两边都对不上，导致项目级配置从未
+    # 生效，镜头关键帧一路回落到全局默认的 local 占位渲染器（PIL 漫画分镜），
+    # 而不是项目里配置的 ComfyUI。
+    provider_name = (payload.get("image_provider") or payload.get("provider")
+                     or proj_extra.get("image_provider") or settings.default_provider_image)
     provider = _provider("image", provider_name)
-    ctx.event("image.started", f"开始生成 Shot {shot.code} 关键帧")
+    ctx.event("image.started", f"开始生成 Shot {shot.code} 关键帧（{provider_name}）")
     ctx.progress(10, "生成关键帧")
 
     # 项目级画风锚定：set_image_provider 写进 project.extra 的前缀/负向词在此生效。
     # 没有它的话，22 个镜头各自成图、色调与质感会明显跳。
-    proj_extra = project.extra if isinstance(project.extra, dict) else {}
     prefix = (proj_extra.get("scene_prompt_prefix") or "").strip()
     prompt = shot.image_prompt or shot.description or shot.code
     if prefix and not prompt.startswith(prefix):
@@ -218,6 +225,31 @@ def _ordered_shot_videos(db, project_id: str) -> list[tuple[Shot, Asset]]:
     return out
 
 
+def _shot_timeline(db, project_id: str) -> list[tuple[Shot, float]]:
+    """按镜头顺序给出每个镜头在成片时间轴上的**真实**时长。
+
+    成片主视频是各镜头视频按序拼接的结果，所以时间轴推进必须用「视频素材的
+    实际时长」，而不是分镜表的计划时长 —— 两者会累积偏差（实测 33 镜可差
+    约 1.1s）。一旦用计划时长推进，旁白与字幕会在后半段逐渐提前于画面，
+    越到情感高潮处越明显。没有视频的镜头才回退到计划时长。
+    """
+    shots = db.query(Shot).filter(Shot.project_id == project_id).order_by(Shot.sequence.asc()).all()
+    out: list[tuple[Shot, float]] = []
+    for shot in shots:
+        dur = float(shot.duration or 0.0)
+        asset: Asset | None = None
+        if shot.enhanced_video_asset_id:
+            cand = db.get(Asset, shot.enhanced_video_asset_id)
+            if cand and Path(cand.file_path).exists():
+                asset = cand
+        if asset is None and shot.video_asset_id:
+            asset = db.get(Asset, shot.video_asset_id)
+        if asset is not None and asset.duration:
+            dur = float(asset.duration)
+        out.append((shot, dur))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 图像 / 角色
 # --------------------------------------------------------------------------- #
@@ -242,43 +274,125 @@ def handle_character_reference(ctx: TaskContext) -> dict[str, Any]:
     payload = ctx.task.payload or {}
     provider = _provider("image", payload.get("provider") or settings.default_provider_image)
 
-    ctx.event("character.started", f"开始生成 Character: {char.name}")
-    ctx.progress(15, f"生成角色参考图：{char.name}")
     proj_extra = project.extra if isinstance(project.extra, dict) else {}
-    prompt = char.reference_prompt or (
+    base_prompt = payload.get("base_prompt") or char.reference_prompt or (
         f"{project.style}，角色设定图：{char.name}，{char.appearance}，正面半身，干净扁平配色"
     )
     prefix = (proj_extra.get("character_prompt_prefix") or "").strip()
-    if prefix and not prompt.startswith(prefix):
-        prompt = f"{prefix}, {prompt}"
-    result = provider.generate(
-        prompt=prompt,
-        negative_prompt=char.negative_prompt or proj_extra.get("negative_prompt") or "",
-        width=project.width // 2 * 1, height=project.height,
-        seed=payload.get("seed"),
-        parameters={
+
+    def _compose(text: str) -> str:
+        if prefix and not text.startswith(prefix):
+            return f"{prefix}, {text}"
+        return text
+
+    variants = [v for v in (payload.get("variants") or []) if isinstance(v, dict)]
+    if not variants and payload.get("variant_count"):
+        n = max(1, int(payload["variant_count"]))
+        variants = [{"label": f"候选 {i + 1}", "prompt": base_prompt} for i in range(n)]
+    is_variant_run = bool(variants)
+
+    common = {
+        "negative_prompt": char.negative_prompt or proj_extra.get("negative_prompt") or "",
+        "parameters": {
             "title": char.name, "body": char.appearance, "badge": "CHARACTER",
             "style_tag": project.style, "shot_code": char.name,
             "workdir": str(_workdir(ctx, "characters")),
-            # ComfyUI：人物设定图走 character 模板
             "workflow_name": _resolve_workflow_name(payload, project, kind="character"),
             "workflow_json": payload.get("workflow_json"),
             "timeout": settings.comfyui_timeout,
         },
-    )
-    asset = assets_svc.ingest_result(
-        ctx.db, project_id=project.id, result=result, asset_type=AssetType.CHARACTER,
-        name=f"{char.name} 参考图", character_id=char.id, task_id=ctx.task.id,
-        extra={"role": "reference"},
-    )
-    char.reference_asset_id = asset.id
-    char.status = "READY"
-    char.provider = result.provider
-    char.model = result.model
-    char.parameters = result.parameters
-    ctx.db.commit()
-    ctx.event("character.finished", f"Character 完成：{char.name}", asset_id=asset.id, url=asset.url)
-    return {"character_id": char.id, "asset_id": asset.id, "url": asset.url}
+    }
+
+    # ---------------------------------------------------------------- 单张模式
+    if not is_variant_run:
+        ctx.event("character.started", f"开始生成 Character: {char.name}")
+        ctx.progress(15, f"生成角色参考图：{char.name}")
+        result = provider.generate(
+            prompt=_compose(base_prompt), width=project.width // 2, height=project.height,
+            seed=payload.get("seed"), **common,
+        )
+        asset = assets_svc.ingest_result(
+            ctx.db, project_id=project.id, result=result, asset_type=AssetType.CHARACTER,
+            name=f"{char.name} 参考图", character_id=char.id, task_id=ctx.task.id,
+            extra={"role": "reference"},
+        )
+        if payload.get("set_reference", True):
+            previous_id = char.reference_asset_id
+            if previous_id and previous_id != asset.id:
+                previous = ctx.db.get(Asset, previous_id)
+                if previous is not None:
+                    prev_extra = dict(previous.extra or {})
+                    prev_extra["role"] = "reference_candidate"
+                    previous.extra = prev_extra
+            char.reference_asset_id = asset.id
+        char.status = "READY"
+        char.provider = result.provider
+        char.model = result.model
+        char.parameters = result.parameters
+        ctx.db.commit()
+        ctx.event("character.finished", f"Character 完成：{char.name}",
+                  asset_id=asset.id, url=asset.url)
+        return {"character_id": char.id, "asset_id": asset.id, "url": asset.url,
+                "is_reference": payload.get("set_reference", True)}
+
+    # ------------------------------------------------------------ 多候选模式
+    # 一次出 N 张形象方向，全部留档为「候选」，不覆盖当前基准参考图 ——
+    # 基准由 set_character_reference 挑选后确定，避免「一次成图即定案」。
+    total = len(variants)
+    ctx.event("character.variants.started", f"开始生成 {total} 张定妆候选：{char.name}")
+    candidates: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    base_seed = payload.get("seed")
+    for idx, spec in enumerate(variants):
+        label = str(spec.get("label") or f"候选 {idx + 1}")
+        text = _compose(str(spec.get("prompt") or base_prompt))
+        asset_name = f"{char.name} 定妆候选 · {label}"
+        # 幂等：任务重试 / 断点续跑时，已出过的候选直接复用，不重复烧 GPU
+        done = ctx.db.execute(
+            select(Asset).where(Asset.task_id == ctx.task.id, Asset.name == asset_name)
+        ).scalars().first()
+        if done is not None and Path(done.file_path).exists():
+            candidates.append({"asset_id": done.id, "label": label, "url": done.url,
+                               "file_path": done.file_path,
+                               "seed": (done.parameters or {}).get("seed"),
+                               "note": str(spec.get("note") or "")})
+            ctx.event("character.variant.reused", f"候选已存在，复用：{label}",
+                      asset_id=done.id)
+            continue
+        ctx.progress(5 + int(90 * idx / total), f"生成候选 {idx + 1}/{total}：{label}")
+        seed = spec.get("seed")
+        if seed is None and base_seed is not None:
+            seed = int(base_seed) + idx
+        try:
+            result = provider.generate(
+                prompt=text, width=project.width // 2, height=project.height,
+                seed=seed, **common,
+            )
+            asset = assets_svc.ingest_result(
+                ctx.db, project_id=project.id, result=result, asset_type=AssetType.CHARACTER,
+                name=f"{char.name} 定妆候选 · {label}", character_id=char.id,
+                task_id=ctx.task.id,
+                extra={"role": "reference_candidate", "label": label,
+                       "note": str(spec.get("note") or ""), "variant_index": idx},
+            )
+            candidates.append({"asset_id": asset.id, "label": label, "url": asset.url,
+                               "file_path": asset.file_path, "seed": seed,
+                               "note": str(spec.get("note") or "")})
+            ctx.event("character.variant.finished", f"候选完成：{label}",
+                      asset_id=asset.id, url=asset.url)
+        except Exception as exc:  # 单张失败不拖垮整批，把原因带回给调用方
+            failed.append({"label": label, "error": f"{type(exc).__name__}: {exc}"})
+            ctx.event("character.variant.failed", f"候选失败：{label} — {exc}", level="ERROR")
+
+    if not candidates:
+        raise ValueError(f"全部候选生成失败：{failed}")
+    ctx.progress(100, f"定妆候选完成 {len(candidates)}/{total}")
+    ctx.event("character.variants.finished",
+              f"{char.name} 定妆候选完成：{len(candidates)}/{total}")
+    return {"character_id": char.id, "name": char.name, "count": len(candidates),
+            "candidates": candidates, "failed": failed,
+            "reference_asset_id": char.reference_asset_id,
+            "message": f"已生成 {len(candidates)} 张候选，用 set_character_reference 选定基准图"}
 
 
 # --------------------------------------------------------------------------- #
@@ -293,7 +407,12 @@ def handle_generate_video(ctx: TaskContext) -> dict[str, Any]:
     frame = _ensure_shot_image(ctx, shot, project)
     ctx.event("video.started", f"开始生成 Shot {shot.code} 视频")
 
-    provider = _provider("video", payload.get("provider") or settings.default_provider_video)
+    # 视频 provider 三级优先：任务显式指定 > 项目固化配置（set_image_provider 写入
+    # project.extra）> 全局默认。与出图保持同一套规则，避免项目级配置形同虚设。
+    proj_extra = project.extra if isinstance(project.extra, dict) else {}
+    provider = _provider("video", payload.get("provider")
+                         or proj_extra.get("video_provider")
+                         or settings.default_provider_video)
     ctx.progress(20, f"渲染 {shot.code} 视频")
     result = provider.generate(
         prompt=shot.video_prompt or shot.description or shot.code,
@@ -479,13 +598,17 @@ def handle_generate_subtitle(ctx: TaskContext) -> dict[str, Any]:
     ctx.progress(20, "汇总时间轴")
     segments: list[dict[str, Any]] = []
     cursor = 0.0
-    for idx, shot in enumerate(shots, start=1):
+    # 用视频素材的真实时长推进时间轴，避免字幕随镜头数累积偏移（见 _shot_timeline）
+    for idx, (shot, duration) in enumerate(_shot_timeline(ctx.db, project.id), start=1):
         text = shot.subtitle_text or shot.voice_script or ""
-        duration = float(shot.duration or settings.default_shot_duration)
-        if shot.voice_asset_id:
-            voice = ctx.db.get(Asset, shot.voice_asset_id)
-            if voice and voice.duration:
-                duration = max(duration, float(voice.duration))
+        duration = duration or float(settings.default_shot_duration)
+        # 不要用「配音文件时长」去 max() 撑长这一段。
+        # 混音时 build_voice_timeline 会用 atempo 把超长旁白**压进镜头槽位**，
+        # 所以真正播出的语音永远不会超过画面；拿文件时长撑长字幕，只会让
+        # 后面每一句字幕都整体推迟（实测 33 镜被撑到 302.2s，比画面多 1.0s，
+        # 结尾那句台词与收尾字幕都晚 1 秒出现）。
+        # 若旁白确实压不进槽位（atempo 上限 1.6×），那是配音过长的问题，
+        # 应该在配音环节解决，不该靠拖长字幕来掩盖。
         segments.append({
             "index": idx, "start": round(cursor, 3), "end": round(cursor + duration, 3),
             "text": text.strip(), "shot_id": shot.id, "code": shot.code,
@@ -538,7 +661,11 @@ def handle_merge_video(ctx: TaskContext) -> dict[str, Any]:
     asset = assets_svc.ingest_result(
         ctx.db, project_id=project.id, result=result, asset_type=AssetType.VIDEO,
         name="拼接粗剪", task_id=ctx.task.id,
-        extra={"role": "merged", "shot_count": len(pairs)},
+        # source_asset_ids 必须写：handle_compose_video 正是靠
+        # 「role=merged 且 source_asset_ids 与当前镜头一致」来判断能否复用粗剪。
+        # 少了它，合成阶段会**把 33 个镜头再拼一遍**，白等一次全片重编码。
+        extra={"role": "merged", "shot_count": len(pairs),
+               "source_asset_ids": [a.id for _, a in pairs]},
     )
     ctx.db.commit()
     ctx.event("merge.finished", f"镜头拼接完成（{len(pairs)} 个镜头）",
@@ -726,14 +853,11 @@ def handle_compose_video(ctx: TaskContext) -> dict[str, Any]:
             main_asset = merged_asset
 
     # 2) 配音：按镜头时间轴对齐（保证音画同步，且不会与下一镜头旁白重叠）
+    #    slot 取视频素材真实时长，与主视频（各镜头拼接）严格一致，避免累积漂移
     voice_path: str | None = None
-    ordered_shots = (
-        ctx.db.query(Shot).filter(Shot.project_id == project.id).order_by(Shot.sequence.asc()).all()
-    )
     timeline: list[dict[str, Any]] = []
     cursor = 0.0
-    for shot in ordered_shots:
-        slot = float(shot.duration or 0.0)
+    for shot, slot in _shot_timeline(ctx.db, project.id):
         if shot.voice_asset_id:
             voice_asset = ctx.db.get(Asset, shot.voice_asset_id)
             if voice_asset and Path(voice_asset.file_path).exists():

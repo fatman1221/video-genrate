@@ -8,7 +8,7 @@ from sqlalchemy import select
 from ..core.constants import (
     AssetGroup, AssetType, ModelSettingKind, ShotStatus, TaskStatus, TaskType, WorkflowState,
 )
-from ..models import Asset, BrowserTask, Project, Shot
+from ..models import Asset, BrowserTask, Project, Shot, Task
 from ..providers import register_all, registry
 from ..services import agent_log
 from ..services import assets as assets_svc

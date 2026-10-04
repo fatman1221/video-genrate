@@ -249,16 +249,16 @@ class CloudMusicProvider(MusicProvider):
         )
 
 
-def available_voices() -> list[str]:
+def available_voices(*, refresh: bool = False) -> list[str]:
     """本机可用的全部音色名（含 Qwen3-TTS 的 speaker），供下拉框使用。"""
-    voices = list(engine.list_voices())
+    voices = list(engine.list_voices(refresh=refresh))
     for sp in engine.QWEN3_SPEAKERS:
         if sp["name"] not in voices:
             voices.append(sp["name"])
     return voices
 
 
-def tts_engines() -> list[dict[str, Any]]:
+def tts_engines(*, refresh: bool = False) -> list[dict[str, Any]]:
     """给 Web UI 的 TTS 引擎清单：引擎 → 可用音色 → 默认值。
 
     前端据此渲染「配音调音台」，不必硬编码任何音色名。
@@ -279,7 +279,7 @@ def tts_engines() -> list[dict[str, Any]]:
         "desc": "轻量快速，无情感指令；音色来自系统与 edge-tts",
         "supports_instruct": False,
         "default_speaker": settings.tts_voice,
-        "speakers": [{"name": v, "label": v, "desc": ""} for v in engine.list_voices()],
+        "speakers": [{"name": v, "label": v, "desc": ""} for v in engine.list_voices(refresh=refresh)],
     })
     return engines
 
