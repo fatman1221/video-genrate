@@ -107,6 +107,9 @@ video_agent_studio.db-wal
 backend/video_agent_studio.db
 backend/video_agent_studio.db-shm
 backend/video_agent_studio.db-wal
+# 迁移前的手工备份（如 .db.bak_before_migration）—— 与上面同理，属数据不属源码
+*.db.bak*
+*.db.bak
 
 # --------------------------------------------------------------------------- #
 # 迁移 / 备份产物（属数据，不属源码）

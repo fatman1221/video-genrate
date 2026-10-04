@@ -275,6 +275,29 @@ class Shot(Base, TimestampMixin):
     quality_score: Mapped[float] = mapped_column(Float, default=0.0)
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
+    # --- 视觉设定体系 / 分镜语法（Phase 3 迁移新增）-------------------------- #
+    #: ⭐ 地点实体（替代字符串 `location`）；旧字符串列保留作单向兼容投影
+    location_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("locations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    location_view_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("location_views.id", ondelete="SET NULL"), nullable=True
+    )
+    #: 视觉依据（引用 VB 条目 id + 结论）
+    visual_basis: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 绑定 [{kind, id, variant_id, role}] —— 取代 character_ids 成为真相
+    asset_bindings: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    continuity_lock_ids: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    continuity_delta_ids: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    #: 起始 / 结束边界六分量（服化道 / 位置 / 姿态 / 情绪 / 光 / 向）
+    start_boundary: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    end_boundary: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    primary_transition: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: {size, angle, camera_height, aspect_notes}
+    framing: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: primary / intentional_repeat
+    coverage_role: Mapped[str] = mapped_column(String(30), default="")
+
     project: Mapped[Project] = relationship(back_populates="shots")
     scene: Mapped[Scene] = relationship(back_populates="shots")
     # 产物通过 *_asset_id 弱引用 Asset（不建 FK 约束，避免与 Asset 形成循环依赖）；
@@ -312,6 +335,22 @@ class Character(Base, TimestampMixin):
     provider: Mapped[str] = mapped_column(String(60), default="")
     model: Mapped[str] = mapped_column(String(120), default="")
     parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+
+    # --- 视觉设定体系（Phase 3 迁移新增）------------------------------------- #
+    #: 归属视觉设定总纲
+    bible_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("visual_bibles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    #: 稳定代号（如 CHAR-LINYE），uq(project_id, code)
+    code: Mapped[str] = mapped_column(String(60), default="")
+    #: 持久识别锚点 —— 换一个就不再是同一个人
+    identity_anchors: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    #: 明确不算身份的（单场雨水、瞬时表情…）
+    not_identity: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    #: 持续表演事实
+    persistent_performance_facts: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 声音方向 {reference, criteria[], distinctness, pronunciation[], not_identity[]}
+    voice_direction: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     project: Mapped[Optional[Project]] = relationship(back_populates="characters")
     series: Mapped[Optional["Series"]] = relationship(back_populates="characters")
@@ -359,6 +398,21 @@ class Asset(Base, TimestampMixin):
     parent_asset_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
     task_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     extra: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+
+    # --- 血缘与参考图（Phase 3 迁移新增）------------------------------------- #
+    #: ⭐「这张图是哪个 Prompt 版本生成的」
+    prompt_version_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    #: 出自哪个计划项（Preview/Confirm 链路的落地凭证）
+    generation_plan_item_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    #: reference / reference_candidate / keyframe / final
+    role: Mapped[str] = mapped_column(String(40), default="", index=True)
+    #: 服务的实体类型 character / location / prop / shot
+    subject_type: Mapped[str] = mapped_column(String(20), default="")
+    subject_id: Mapped[str] = mapped_column(String(40), default="")
+    #: 对应的 look / view / state
+    variant_id: Mapped[str] = mapped_column(String(40), default="")
+    #: 血缘快照（冗余但查询友好）
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     project: Mapped[Optional[Project]] = relationship(back_populates="assets")
 
@@ -492,6 +546,12 @@ class QualityCheck(Base, TimestampMixin):
     score: Mapped[float] = mapped_column(Float, default=0.0)
     run_id: Mapped[str] = mapped_column(String(40), default="")
 
+    # --- 规则分级（Phase 3 迁移新增）----------------------------------------- #
+    #: structural_invariant / reviewed_invariant / craft_default / taste_option
+    rule_tier: Mapped[str] = mapped_column(String(40), default="", index=True)
+    #: 规则编号，如 CON-07
+    rule_id: Mapped[str] = mapped_column(String(40), default="")
+
 
 class ProviderRecord(Base, TimestampMixin):
     """Provider 注册表（可运行时启停 / 设默认）。"""
@@ -524,3 +584,431 @@ class BrowserTask(Base, TimestampMixin):
     result: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     executor: Mapped[str] = mapped_column(String(60), default="agent")
     assigned_to: Mapped[str] = mapped_column(String(80), default="")
+
+
+# =========================================================================== #
+# 视觉设定体系（Visual Bible）—— 借鉴 drama-skills 的「身份 / 变体分离」
+#
+# 三对对称结构：
+#   Character      → CharacterLook        （人物身份 → 造型变体）
+#   Location       → LocationView         （地点身份 → 观看变体）
+#   Prop           → PropState            （道具身份 → 状态变体）
+# 判据：**身份**换一个就不再是同一个人/地/物；**变体**身份不变，但服装、伤势、
+# 时段、天气、开合或持有状态改变。
+#
+# 约定（与现有实体一致）：
+# - 全部挂 project_id，便于级联删除
+# - 「指向运行时实体（prompt_versions / assets）」一律弱引用（String，不加 FK），
+#   避免与 Asset/Prompt 形成循环依赖 —— 与 Shot.*_asset_id 的现有风格一致
+# =========================================================================== #
+class VisualBible(Base, TimestampMixin):
+    """一个项目的视觉设定总纲（一项目一册）。
+
+    `current_style_id` 是弱引用（不加 FK）：visual_styles.bible_id 指向本表，
+    若此处再指回去会形成建表循环依赖。
+    """
+
+    __tablename__ = "visual_bibles"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("vb"))
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True, unique=True
+    )
+    series_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="")
+    #: 视觉一句话（logline）
+    visual_logline: Mapped[str] = mapped_column(Text, default="")
+    #: 当前生效风格 —— 弱引用 visual_styles.id
+    current_style_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    #: 时代锚点（跨全场不得漂移的形制、器物、字体…）
+    era_anchors: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 全局视觉规则 {lighting, palette, camera_language, composition, negative}
+    global_rules: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 全局文字政策 {readable_text_allowed, rules[]}
+    text_policy: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class VisualStyle(Base, TimestampMixin):
+    """视觉风格 / 形态。不是「风格名前缀」，而是规定各字段怎么写。"""
+
+    __tablename__ = "visual_styles"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sty"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    bible_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("visual_bibles.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), default="")
+    #: live_action / guoman_2d / dynamic_comic / chibi / stylized_3d / ink_wash
+    form_card: Mapped[str] = mapped_column(String(40), default="", index=True)
+    narrative_duty: Mapped[str] = mapped_column(Text, default="")
+    identity_carrier: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    continuity_carriers: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    layer_split: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    rendering: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    lighting: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    palette: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    camera_language: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    composition_rules: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    motion_budget: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    negative_rules: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class CharacterLook(Base, TimestampMixin):
+    """角色造型变体（换装 / 伤势 / 状态），身份不变。"""
+
+    __tablename__ = "character_looks"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("look"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    character_id: Mapped[str] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(60), default="")          # LOOK-LINYE-DEFAULT
+    name: Mapped[str] = mapped_column(String(200), default="")
+    #: 变体的基底造型（自引用）
+    base_look_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("character_looks.id", ondelete="SET NULL"), nullable=True
+    )
+    #: {wardrobe_layers[], hair_styling[], makeup[], injury[], weathering[]}
+    differences: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    cause_shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True
+    )
+    valid_from: Mapped[str] = mapped_column(String(80), default="")
+    valid_until: Mapped[str] = mapped_column(String(80), default="")
+    reference_asset_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+
+    __table_args__ = (UniqueConstraint("character_id", "code", name="uq_look_character_code"),)
+
+
+class Location(Base, TimestampMixin):
+    """地点身份（换一个就不再是同一个地方）。"""
+
+    __tablename__ = "locations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("loc"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    series_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    bible_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("visual_bibles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    code: Mapped[str] = mapped_column(String(60), default="")          # LOC-FERRY-OFFICE
+    name: Mapped[str] = mapped_column(String(200), default="")
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    #: {shape, zones[], entrances[{id, connects_to}], fixed_anchors[], materials[]}
+    spatial_identity: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    era_form: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    not_identity: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    reference_asset_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (UniqueConstraint("project_id", "code", name="uq_location_project_code"),)
+
+
+class LocationView(Base, TimestampMixin):
+    """观看变体（同一地点的不同机位 / 时段 / 天气 / 陈设）。"""
+
+    __tablename__ = "location_views"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("view"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    location_id: Mapped[str] = mapped_column(
+        ForeignKey("locations.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(String(60), default="")          # VIEW-...-NORTH-NIGHT
+    name: Mapped[str] = mapped_column(String(200), default="")
+    base_view_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("location_views.id", ondelete="SET NULL"), nullable=True
+    )
+    #: {from_zone, toward, visible_fixed_anchors[]}
+    orientation: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: {dressing[], time, weather, light[]}
+    state_differences: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    cause_shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True
+    )
+    valid_from: Mapped[str] = mapped_column(String(80), default="")
+    valid_until: Mapped[str] = mapped_column(String(80), default="")
+    reference_asset_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (UniqueConstraint("location_id", "code", name="uq_view_location_code"),)
+
+
+class Prop(Base, TimestampMixin):
+    """道具身份（换一个就不再是同一件东西）。"""
+
+    __tablename__ = "props"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("prop"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    series_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("series.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    bible_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("visual_bibles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    code: Mapped[str] = mapped_column(String(60), default="")          # PROP-TIN-CASE
+    name: Mapped[str] = mapped_column(String(200), default="")
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    #: {scale_and_form, materials[], function, permanent_marks[]}
+    identity_anchors: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: {mode: exact_readable|graphic_only|no_readable_text|pending_creator_text, text, placement}
+    text_policy: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    not_identity: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    reference_asset_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (UniqueConstraint("project_id", "code", name="uq_prop_project_code"),)
+
+
+class PropState(Base, TimestampMixin):
+    """道具状态变体（开合 / 破损 / 持有者 / 内容物）。"""
+
+    __tablename__ = "prop_states"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pst"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    prop_id: Mapped[str] = mapped_column(ForeignKey("props.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(60), default="")          # PSTATE-TIN-OPEN-EMPTY
+    name: Mapped[str] = mapped_column(String(200), default="")
+    base_state_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("prop_states.id", ondelete="SET NULL"), nullable=True
+    )
+    #: {open, damage, powered} 或 {summary}
+    condition: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: {owner_id, holder_id, hand, location_id}
+    custody: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 内容物 prop id 列表
+    contents: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    text_visibility: Mapped[str] = mapped_column(String(60), default="")
+    cause_shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True
+    )
+    valid_from: Mapped[str] = mapped_column(String(80), default="")
+    valid_until: Mapped[str] = mapped_column(String(80), default="")
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (UniqueConstraint("prop_id", "code", name="uq_pstate_prop_code"),)
+
+
+# --------------------------------------------------------------------------- #
+# 连续性锁 / 连续性增量 —— 两个**不同**的机制，分表建，不要合并
+#
+#   LOCK-  回答「什么永远不变」：缩成最小名词短语，逐字强制出现在所有 in-scope 提示词里
+#   DELTA- 回答「什么变了、从什么变成什么、为什么」：before/after/cause/有效期/影响范围
+# --------------------------------------------------------------------------- #
+class ContinuityLock(Base, TimestampMixin):
+    """连续性锁。
+
+    `surface` 是灵魂：**必须逐字出现在所有 in-scope 的 Prompt 正文里**，
+    校验规则 —— 大小写不敏感、换行按空格、整词匹配（不能粘在别的词上）、
+    排除负面提示词里的命中。
+    语法：「颜色 + 材质/形制 + 物体」的最小名词短语，不含标点/动作/状态/数量/剧情。
+    """
+
+    __tablename__ = "continuity_locks"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("lock"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    bible_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("visual_bibles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    code: Mapped[str] = mapped_column(String(80), default="")          # LOCK-KNIT
+    name: Mapped[str] = mapped_column(String(200), default="")         # 中文名
+    surface: Mapped[str] = mapped_column(Text, default="")             # ⭐ 锁面
+    prompt_language: Mapped[str] = mapped_column(String(10), default="en")
+    subject_type: Mapped[str] = mapped_column(String(20), default="", index=True)  # character/location/prop/style
+    #: ⚠️ 弱引用（指向具体实体：characters/locations/props 的 id）
+    subject_id: Mapped[str] = mapped_column(String(40), default="", index=True)
+    #: 可空，指向 look/view/state
+    variant_id: Mapped[str] = mapped_column(String(40), default="")
+    #: ["all"] 或 [shot_id, ...]
+    shot_scope: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    #: 图片提示词条目 code 列表
+    prompt_scope: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (UniqueConstraint("project_id", "code", name="uq_lock_project_code"),)
+
+
+class ContinuityDelta(Base, TimestampMixin):
+    """连续性增量（剧情导致的状态变化）。
+
+    纪律：「未知」不等于「恢复默认」—— 上集带伤、本集没提，不能自动恢复为无伤，
+    保留最后确认状态并建 `unresolved`。
+    """
+
+    __tablename__ = "continuity_deltas"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("delta"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(80), default="")          # DELTA-TIN-OPEN
+    scene_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("scenes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    subject_type: Mapped[str] = mapped_column(String(20), default="")
+    subject_id: Mapped[str] = mapped_column(String(40), default="")
+    state_field: Mapped[str] = mapped_column(String(80), default="")   # condition.open / custody
+    before: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    after: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    cause_shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True
+    )
+    effective_from: Mapped[str] = mapped_column(String(80), default="")
+    effective_until: Mapped[str] = mapped_column(String(80), default="")
+    #: CON-01 边界核对（下一个关联镜头）
+    next_linked_shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True
+    )
+    reconciliation_status: Mapped[str] = mapped_column(String(30), default="must_match_or_revise")
+    affected_refs: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+
+
+# --------------------------------------------------------------------------- #
+# Prompt 与版本 —— 「改设定不覆盖旧 Prompt，能反查这张图是哪个版本生成的」
+# --------------------------------------------------------------------------- #
+class Prompt(Base, TimestampMixin):
+    """Prompt 逻辑单元（一个镜头一类产物一条）。
+
+    `current_version_id` 是弱引用（不加 FK）：prompt_versions.prompt_id 指向本表。
+    """
+
+    __tablename__ = "prompts"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("prm"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    type: Mapped[str] = mapped_column(String(20), default="image", index=True)  # image/video/voice/music
+    code: Mapped[str] = mapped_column(String(80), default="")          # IMG-... / MOTION-...
+    name: Mapped[str] = mapped_column(String(200), default="")
+    #: 弱引用 prompt_versions.id —— 指向当前生效版本
+    current_version_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    latest_version: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (UniqueConstraint("project_id", "code", name="uq_prompt_project_code"),)
+
+
+class PromptVersion(Base, TimestampMixin):
+    """Prompt 版本 —— **只 INSERT，永不 UPDATE 覆盖**。
+
+    改动只产生新版本；`compiled_from` 记录编译输入快照（实体 id + version，**不用哈希**）。
+    STALE 由 service 层动态判定，不写死在此表。
+    """
+
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pv"))
+    prompt_id: Mapped[str] = mapped_column(ForeignKey("prompts.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    raw_prompt: Mapped[str] = mapped_column(Text, default="")
+    compiled_prompt: Mapped[str] = mapped_column(Text, default="")
+    negative_prompt: Mapped[str] = mapped_column(Text, default="")
+    #: ⭐ 编译输入快照（实体 id + version，不是哈希）
+    #: {bible:{id,version}, style:{...}, subjects:[{kind,id,version}],
+    #:  locks:[{id,version,surface}], shot:{id,updated_at}, bindings:[...]}
+    compiled_from: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: {renderer:'video-genrate-8seg', version:'1.0.0'}
+    recipe: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    model: Mapped[str] = mapped_column(String(100), default="")
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), default="")
+    resolution: Mapped[str] = mapped_column(String(20), default="")
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: 参考图槽位绑定
+    #: [{slot, order, asset_id|plan_locator, kind:REF|PLAN|IMG, role, label,
+    #:   may_control[], must_not_control[], admission_status}]
+    reference_assets: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    continuity_lock_ids: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    stale_reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(40), default="agent")
+
+    __table_args__ = (UniqueConstraint("prompt_id", "version", name="uq_pv_prompt_version"),)
+
+
+# --------------------------------------------------------------------------- #
+# 生成计划 —— Preview → Confirm → Produce（花钱前先落计划、看预览、显式确认）
+# --------------------------------------------------------------------------- #
+class GenerationPlan(Base, TimestampMixin):
+    """一次批量生产的计划。DRAFT → PREVIEWED → CONFIRMED → RUNNING → DONE。
+
+    `fingerprint` 对 (items + parameters + outputs) 做 canonical JSON + sha256；
+    确认时记录，物化时校验；任一变化 → 旧确认失效。
+    """
+
+    __tablename__ = "generation_plans"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("plan"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    #: batch_image / batch_video / batch_voice / mixed
+    plan_type: Mapped[str] = mapped_column(String(30), default="batch_image")
+    #: 选中范围（shot codes / stage / 筛选条件）
+    source_scope: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: ⭐ 预览汇总 {item_count, by_modality{}, by_provider{}, resolutions{},
+    #:            est_seconds, est_cost_note, warnings[]}
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(80), default="")
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 确认后创建的任务 id 列表
+    task_ids: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+
+
+class GenerationPlanItem(Base, TimestampMixin):
+    """计划项 —— 一个镜头一次产物的计划（PLAN 态：还没有 Asset 行）。"""
+
+    __tablename__ = "generation_plan_items"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pli"))
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_plans.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    shot_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("shots.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    prompt_version_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
+    modality: Mapped[str] = mapped_column(String(20), default="image")
+    provider: Mapped[str] = mapped_column(String(60), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), default="")
+    resolution: Mapped[str] = mapped_column(String(20), default="")
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    reference_assets: Mapped[list[Any]] = mapped_column(JSONType, default=list)
+    predicted_cost: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    #: PENDING / TASK_CREATED / SKIPPED / FAILED
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+    __table_args__ = (UniqueConstraint("plan_id", "ordinal", name="uq_plitem_plan_ordinal"),)
