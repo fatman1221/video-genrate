@@ -6,7 +6,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import (
-    Asset, Character, Project, Scene, Script, Shot, Storyboard, Series, Task, WorkflowStep,
+    Asset, Character, Project, Scene, Script, ScriptSection, Shot, Storyboard, Series, Task,
+    WorkflowStep,
 )
 from . import workflow as workflow_svc
 
@@ -116,6 +117,34 @@ def serialize_script(script: Script) -> dict[str, Any]:
         "length": len(script.content or ""),
         "created_at": iso(script.created_at),
         "updated_at": iso(script.updated_at),
+    }
+
+
+def serialize_script_section(section: ScriptSection) -> dict[str, Any]:
+    """脚本分段的对外结构。
+
+    ``written`` 是给 UI 用的便捷判断（正文是否已有内容），不要求调用方再自己 strip。
+    """
+    content = section.content or ""
+    return {
+        "section_id": section.id,
+        "id": section.id,
+        "project_id": section.project_id,
+        "script_id": section.script_id,
+        "sequence": section.sequence,
+        "code": section.code,
+        "title": section.title,
+        "summary": section.summary,
+        "beat": section.beat,
+        "content": content,
+        "length": len(content),
+        "written": bool(content.strip()),
+        "target_duration": section.target_duration,
+        "status": section.status,
+        "provider": section.provider,
+        "parameters": section.parameters or {},
+        "created_at": iso(section.created_at),
+        "updated_at": iso(section.updated_at),
     }
 
 

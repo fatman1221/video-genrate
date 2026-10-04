@@ -25,6 +25,8 @@ TYPE_DIRS: dict[str, str] = {
     "SFX": "sfx",
     "SUBTITLE": "subtitles",
     "PROJECT_OUTPUT": "outputs",
+    # 外部上传的参考素材（不参与成片，只作创作依据）
+    "REFERENCE": "references",
     "TEMP": "temp",
 }
 

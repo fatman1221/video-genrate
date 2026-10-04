@@ -8,9 +8,12 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ..core.constants import ProjectStatus, SceneStatus, ShotStatus, TaskType, WorkflowState
-from ..models import Character, Project, Scene, Script, Shot, Storyboard, Series
+from ..core.constants import (
+    AssetType, ProjectStatus, SceneStatus, ShotStatus, TaskType, WorkflowState,
+)
+from ..models import Asset, Character, Project, Scene, Script, Shot, Storyboard, Series
 from ..services import agent_log, characters as characters_svc, planner, projects as projects_svc
+from ..services import script_sections as sections_svc
 from ..services import serializers as S, series as series_svc
 from ..services import tasks as tasks_svc, workflow as workflow_svc
 from .base import SkillContext, SkillError, skill
@@ -272,6 +275,158 @@ def update_script(ctx: SkillContext, *, script_id: str, **fields: Any) -> dict[s
             changed[key] = fields[key] if key != "content" else f"{len(fields[key])} 字"
     ctx.db.commit()
     return {"script": S.serialize_script(script), "changed": changed}
+
+
+# --------------------------------------------------------------------------- #
+# ScriptSection —— 按幕写作
+# --------------------------------------------------------------------------- #
+def _script_brief(ctx: SkillContext, project_id: str) -> dict[str, Any] | None:
+    """分段类 Skill 统一返回整篇脚本快照（项目可能还没有脚本）。"""
+    script = sections_svc.latest_script(ctx.db, project_id)
+    return S.serialize_script(script) if script else None
+
+
+@skill(
+    name="plan_script_sections", category="script", is_async=False,
+    description=(
+        "把一集脚本按幕切分（规划分段）。只需给出每幕的标题/要点/节拍，"
+        "已有正文会按幕序对齐保留，不会因为重新规划而丢失。"
+    ),
+    tags=("script", "write"),
+    input_schema={"type": "object", "properties": {
+        "project_id": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "description": "幕定义列表，按顺序给出",
+            "items": {"type": "object", "properties": {
+                "sequence": {"type": "integer", "description": "幕序，从 1 开始；不传按数组顺序"},
+                "code": {"type": "string", "description": "短标识，如「第一幕」"},
+                "title": {"type": "string", "description": "幕标题，如「第一幕 · 落脚」"},
+                "summary": {"type": "string", "description": "这一幕要讲什么（剧情推进 / 信息点）"},
+                "beat": {"type": "string", "description": "情绪节拍 / 关键转折"},
+                "target_duration": {"type": "number", "description": "这一幕目标时长（秒）"},
+                "content": {"type": "string", "description": "正文；规划阶段通常留空"},
+            }, "required": ["title"]},
+        },
+        "replace": {"type": "boolean", "default": True,
+                    "description": "true=整体替换分段结构；false=仅当项目还没有分段时创建"},
+    }, "required": ["project_id", "sections"]},
+    examples=({"project_id": "proj_xxx", "sections": [
+        {"title": "第一幕 · 落脚", "summary": "珂搬进出租屋，交代独居处境", "beat": "安静、疲惫",
+         "target_duration": 60},
+        {"title": "第二幕 · 相遇", "summary": "白色情人节夜归，遇见滞销幼犬", "beat": "转折、心软",
+         "target_duration": 70},
+    ]},),
+)
+def plan_script_sections(ctx: SkillContext, *, project_id: str,
+                         sections: list[dict[str, Any]],
+                         replace: bool = True) -> dict[str, Any]:
+    project = ctx.db.get(Project, project_id)
+    if project is None:
+        raise SkillError(f"项目不存在: {project_id}", code="NOT_FOUND")
+    if not sections:
+        raise SkillError("sections 不能为空", code="MISSING_SECTIONS")
+
+    if not replace and sections_svc.list_sections(ctx.db, project.id):
+        raise SkillError("项目已有分段；如需重新规划请传 replace=true", code="ALREADY_SECTIONED")
+
+    rows = sections_svc.replace_sections(ctx.db, project, sections, actor=ctx.actor)
+    ctx.db.commit()
+    return {
+        "items": [S.serialize_script_section(s) for s in rows],
+        "total": len(rows),
+        "script": _script_brief(ctx, project.id),
+        "message": f"已切分为 {len(rows)} 幕，可逐幕调用 upsert_script_section 写入正文",
+    }
+
+
+@skill(
+    name="upsert_script_section", category="script", is_async=False,
+    description=(
+        "写入 / 更新一幕的正文与要点。这是「逐幕生成」的落盘动作："
+        "用 section_id 定位已有幕，或用 sequence 指定幕序（不存在则新建）。"
+        "正文写入后会自动回填整篇 Script。"
+    ),
+    tags=("script", "write"),
+    input_schema={"type": "object", "properties": {
+        "project_id": {"type": "string"},
+        "section_id": {"type": "string", "description": "目标幕的 id；与 sequence 二选一"},
+        "sequence": {"type": "integer", "description": "目标幕序（1 开始）；不存在则新建"},
+        "code": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string", "description": "这一幕要讲什么"},
+        "beat": {"type": "string", "description": "情绪节拍 / 关键转折"},
+        "content": {"type": "string", "description": "正文（旁白 / 对白）"},
+        "target_duration": {"type": "number"},
+        "status": {"type": "string", "description": "留空则按正文是否有内容自动判定 DRAFT / READY"},
+        "provider": {"type": "string"},
+        "parameters": {"type": "object"},
+    }, "required": ["project_id"]},
+)
+def upsert_script_section(
+    ctx: SkillContext, *, project_id: str,
+    section_id: str = "", sequence: int | None = None,
+    code: str | None = None, title: str | None = None, summary: str | None = None,
+    beat: str | None = None, content: str | None = None,
+    target_duration: float | None = None, status: str | None = None,
+    provider: str | None = None, parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    project = ctx.db.get(Project, project_id)
+    if project is None:
+        raise SkillError(f"项目不存在: {project_id}", code="NOT_FOUND")
+
+    fields: dict[str, Any] = {}
+    for key, value in (("code", code), ("title", title), ("summary", summary),
+                       ("beat", beat), ("content", content), ("status", status),
+                       ("provider", provider), ("target_duration", target_duration),
+                       ("parameters", parameters)):
+        if value is not None:
+            fields[key] = value
+
+    try:
+        section = sections_svc.upsert_section(
+            ctx.db, project, section_id=section_id, sequence=sequence,
+            fields=fields, actor=ctx.actor,
+        )
+    except ValueError as exc:
+        raise SkillError(str(exc), code="NOT_FOUND") from exc
+    ctx.db.commit()
+
+    all_sections = sections_svc.list_sections(ctx.db, project.id)
+    return {
+        "section": S.serialize_script_section(section),
+        "script": _script_brief(ctx, project.id),
+        "written_count": sum(1 for s in all_sections if (s.content or "").strip()),
+        "total": len(all_sections),
+        "message": (
+            f"第 {section.sequence} 幕已更新（{len(section.content or '')} 字）；"
+            "写下一幕请先调 GET script-sections/{id}/prompt 取上下文"
+        ),
+    }
+
+
+@skill(
+    name="delete_script_section", category="script", is_async=False,
+    description="删除一幕脚本，并把剩余幕序重排为连续。",
+    tags=("script", "write"),
+    input_schema={"type": "object", "properties": {
+        "project_id": {"type": "string"}, "section_id": {"type": "string"},
+    }, "required": ["project_id", "section_id"]},
+)
+def delete_script_section(ctx: SkillContext, *, project_id: str,
+                          section_id: str) -> dict[str, Any]:
+    project = ctx.db.get(Project, project_id)
+    if project is None:
+        raise SkillError(f"项目不存在: {project_id}", code="NOT_FOUND")
+    if not sections_svc.delete_section(ctx.db, project, section_id, actor=ctx.actor):
+        raise SkillError(f"脚本分段不存在: {section_id}", code="NOT_FOUND")
+    ctx.db.commit()
+    rows = sections_svc.list_sections(ctx.db, project.id)
+    return {
+        "items": [S.serialize_script_section(s) for s in rows],
+        "total": len(rows),
+        "script": _script_brief(ctx, project.id),
+    }
 
 
 @skill(
@@ -736,33 +891,150 @@ def get_character(ctx: SkillContext, *, character_id: str | None = None,
 
 @skill(
     name="generate_character_reference", category="character", is_async=True,
-    description="为角色生成参考图 / 人物设定图（异步任务）。provider=comfyui 时用 workflow_name 指定模板。",
+    description=(
+        "为角色生成参考图 / 人物设定图（异步任务）。provider=comfyui 时用 workflow_name 指定模板。"
+        "支持一次出多张「定妆候选图」（variants / variant_count），候选不会覆盖当前基准参考图，"
+        "待调用 set_character_reference 挑选后再提升为基准。"
+    ),
     tags=("character", "generate"),
     input_schema={"type": "object", "properties": {
         "character_id": {"type": "string"}, "provider": {"type": "string"},
         "workflow_name": {"type": "string",
                           "description": "ComfyUI 工作流模板名，默认 qwen_image_character"},
         "workflow_json": {"type": "object", "description": "直接传入 API 格式工作流"},
-        "prompt": {"type": "string", "description": "覆盖角色自带 reference_prompt"},
-        "seed": {"type": "integer"}},
-        "required": ["character_id"]},
+        "prompt": {"type": "string", "description": "覆盖角色自带 reference_prompt（单张模式）"},
+        "seed": {"type": "integer"},
+        "variants": {
+            "type": "array",
+            "description": "候选图列表：每项描述一个形象方向，会各出一张图并全部保留为候选",
+            "items": {"type": "object", "properties": {
+                "label": {"type": "string", "description": "候选短名，如「清瘦硬朗」"},
+                "prompt": {"type": "string", "description": "该候选的完整提示词，省略则用角色基础 prompt"},
+                "note": {"type": "string", "description": "方向说明，仅记录在素材上便于回看"},
+                "seed": {"type": "integer"},
+            }},
+        },
+        "variant_count": {"type": "integer",
+                          "description": "不给 variants 时，按基础 prompt 自动出 N 张候选（同词不同种子）"},
+        "set_reference": {"type": "boolean",
+                          "description": "单张模式默认 true（出图即设为基准）；候选模式默认 false"},
+        "base_prompt": {"type": "string",
+                        "description": "候选模式的公共提示词前缀，与各候选 prompt 拼接"},
+    },
+    "required": ["character_id"]},
 )
 def generate_character_reference(ctx: SkillContext, *, character_id: str,
                                  provider: str | None = None,
                                  workflow_name: str | None = None,
                                  workflow_json: dict[str, Any] | None = None,
                                  prompt: str | None = None,
-                                 seed: int | None = None):
+                                 seed: int | None = None,
+                                 variants: list[dict[str, Any]] | None = None,
+                                 variant_count: int | None = None,
+                                 set_reference: bool | None = None,
+                                 base_prompt: str | None = None):
     char = ctx.db.get(Character, character_id)
     if char is None:
         raise SkillError(f"角色不存在: {character_id}", code="NOT_FOUND")
-    if prompt:
-        char.reference_prompt = prompt
+    variants = [v for v in (variants or []) if isinstance(v, dict)]
+    if not variants and not (variant_count and int(variant_count) > 0):
+        # 单张模式：prompt 覆盖角色基线，出图即作为基准参考图
+        if prompt:
+            char.reference_prompt = prompt
     host_project_id = _character_host_project_id(ctx.db, char)
     return tasks_svc.create_task(
         ctx.db, project_id=host_project_id, type=TaskType.GENERATE_CHARACTER_REFERENCE,
-        name=f"生成角色参考图：{char.name}", character_id=char.id,
+        name=(f"生成角色参考图候选（{len(variants)} 张）：{char.name}" if variants
+              else f"生成角色参考图：{char.name}"),
+        character_id=char.id,
         payload={"provider": provider, "workflow_name": workflow_name,
-                 "workflow_json": workflow_json, "seed": seed},
+                 "workflow_json": workflow_json, "seed": seed,
+                 "variants": variants or None,
+                 "variant_count": (int(variant_count) if variant_count else None),
+                 "set_reference": (True if set_reference is None else bool(set_reference))
+                 if not variants else bool(set_reference),
+                 "base_prompt": base_prompt or prompt},
         created_by=ctx.actor, commit=False,
     )
+
+
+@skill(
+    name="list_character_references", category="character",
+    description="列出某角色的全部参考图（当前基准 + 历史候选），用于挑选 / 对比。",
+    tags=("character", "read"),
+    input_schema={"type": "object", "properties": {"character_id": {"type": "string"}},
+                  "required": ["character_id"]},
+)
+def list_character_references(ctx: SkillContext, *, character_id: str) -> dict[str, Any]:
+    char = ctx.db.get(Character, character_id)
+    if char is None:
+        raise SkillError(f"角色不存在: {character_id}", code="NOT_FOUND")
+    rows = list(ctx.db.execute(
+        select(Asset).where(Asset.character_id == character_id, Asset.type == AssetType.CHARACTER)
+        .order_by(Asset.created_at.asc())
+    ).scalars())
+    items = []
+    for a in rows:
+        brief = S.asset_brief(a, ) or {}
+        extra = a.extra if isinstance(a.extra, dict) else {}
+        brief["role"] = extra.get("role") or ""
+        brief["label"] = extra.get("label") or ""
+        brief["note"] = extra.get("note") or ""
+        brief["is_reference"] = (a.id == char.reference_asset_id)
+        items.append(brief)
+    # 基准排最前，其余按时间倒序
+    items.sort(key=lambda x: (not x["is_reference"],))
+    return {"character_id": character_id, "name": char.name,
+            "reference_asset_id": char.reference_asset_id,
+            "count": len(items), "references": items}
+
+
+@skill(
+    name="set_character_reference", category="character",
+    description="把某张候选图提升为角色的基准参考图 —— 之后所有镜头都以它做人物一致性锚点。",
+    tags=("character", "write"),
+    input_schema={"type": "object", "properties": {
+        "character_id": {"type": "string"}, "asset_id": {"type": "string"}},
+        "required": ["character_id", "asset_id"]},
+)
+def set_character_reference(ctx: SkillContext, *, character_id: str,
+                            asset_id: str) -> dict[str, Any]:
+    char = ctx.db.get(Character, character_id)
+    if char is None:
+        raise SkillError(f"角色不存在: {character_id}", code="NOT_FOUND")
+    asset = ctx.db.get(Asset, asset_id)
+    if asset is None:
+        raise SkillError(f"素材不存在: {asset_id}", code="NOT_FOUND")
+    if asset.character_id != character_id:
+        raise SkillError(f"素材 {asset_id} 不属于角色 {character_id}", code="BAD_INPUT")
+    if asset.type != AssetType.CHARACTER:
+        raise SkillError(f"素材 {asset_id} 不是角色参考图（type={asset.type}）", code="BAD_INPUT")
+    if not asset.file_path:
+        raise SkillError(f"素材 {asset_id} 还没有产物文件", code="BAD_INPUT")
+
+    previous_id = char.reference_asset_id
+    if previous_id and previous_id != asset_id:
+        previous = ctx.db.get(Asset, previous_id)
+        if previous is not None:
+            extra = dict(previous.extra or {})
+            extra["role"] = "reference_candidate"
+            previous.extra = extra
+    extra = dict(asset.extra or {})
+    extra["role"] = "reference"
+    asset.extra = extra
+
+    char.reference_asset_id = asset.id
+    char.status = "READY"
+    if asset.provider:
+        char.provider = asset.provider
+    if asset.model:
+        char.model = asset.model
+    # 让「按角色基线重出」也能复现这张图的形象：prompt 反向固化到角色上
+    if asset.prompt:
+        char.reference_prompt = asset.prompt
+    ctx.db.commit()
+    agent_log.log_event(ctx.db, project_id=char.project_id, event="character.reference",
+                        message=f"角色 {char.name} 基准参考图切换为 {asset.id}")
+    return {"character": S.serialize_character(char, db=ctx.db),
+            "reference_asset_id": asset.id, "previous_asset_id": previous_id}
+

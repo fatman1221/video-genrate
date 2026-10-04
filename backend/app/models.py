@@ -20,8 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .core.constants import (
-    AssetStatus, AssetType, ProjectStatus, SceneStatus, ShotStatus, TaskStatus,
-    WorkflowState,
+    AssetStatus, AssetType, ProjectStatus, SceneStatus, ScriptSectionStatus, ShotStatus,
+    TaskStatus, WorkflowState,
 )
 from .database import Base, JSONType
 
@@ -112,6 +112,9 @@ class Project(Base, TimestampMixin):
 
     series: Mapped[Optional["Series"]] = relationship(back_populates="episodes")
     scripts: Mapped[list["Script"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    script_sections: Mapped[list["ScriptSection"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     storyboards: Mapped[list["Storyboard"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     scenes: Mapped[list["Scene"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     shots: Mapped[list["Shot"]] = relationship(back_populates="project", cascade="all, delete-orphan")
@@ -140,6 +143,46 @@ class Script(Base, TimestampMixin):
     parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
 
     project: Mapped[Project] = relationship(back_populates="scripts")
+
+
+class ScriptSection(Base, TimestampMixin):
+    """脚本分段（一幕 / 一章）。
+
+    为什么单独建表：一集 5 分钟片的脚本上千字，一次性生成质量难控、改一处要整篇重来。
+    按幕切开后既可以「只写这一幕」，续写时又能把前面已定稿的正文带上，上下文自然连贯。
+
+    ``content`` 为空表示这一幕只有要点、正文待写（status=DRAFT）；写好后转 READY。
+    ``summary`` / ``beat`` 是给生成用的意图说明，用户可直接改，改它们不必动正文。
+    """
+    __tablename__ = "script_sections"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sec"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    #: 归属脚本；允许为空 —— 可以先分段后建脚本，也可以只分段不建脚本
+    script_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("scripts.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    #: 幕序，从 1 开始，决定阅读、生成与拼接顺序
+    sequence: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    code: Mapped[str] = mapped_column(String(40), default="")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    #: 这一幕要讲什么（剧情推进 / 信息点），生成正文的主要依据
+    summary: Mapped[str] = mapped_column(Text, default="")
+    #: 情绪节拍 / 关键转折，控制表演与镜头调性
+    beat: Mapped[str] = mapped_column(Text, default="")
+    #: 正文（旁白 / 对白）
+    content: Mapped[str] = mapped_column(Text, default="")
+    #: 这一幕的目标时长（秒）；0 = 未指定，按全片时长均分
+    target_duration: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(
+        String(32), default=ScriptSectionStatus.DRAFT, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(60), default="agent")
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+
+    project: Mapped[Project] = relationship(back_populates="script_sections")
+
+    __table_args__ = (Index("ix_script_sections_project_seq", "project_id", "sequence"),)
 
 
 # --------------------------------------------------------------------------- #

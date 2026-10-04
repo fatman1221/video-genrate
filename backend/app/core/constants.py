@@ -72,9 +72,15 @@ class AssetType:
     SFX: Final = "SFX"
     SUBTITLE: Final = "SUBTITLE"
     PROJECT_OUTPUT: Final = "PROJECT_OUTPUT"
+    #: 外部上传的参考素材（大纲/小说/文案、角色与场景参考图、样片小样）。
+    #: 只作创作依据，不参与成片；子类由 ``extra.kind`` 区分（text/image/video/audio）。
+    REFERENCE: Final = "REFERENCE"
     TEMP: Final = "TEMP"
 
-    ALL: Final = (CHARACTER, IMAGE, SCENE, VIDEO, VOICE, MUSIC, SFX, SUBTITLE, PROJECT_OUTPUT, TEMP)
+    ALL: Final = (CHARACTER, IMAGE, SCENE, VIDEO, VOICE, MUSIC, SFX, SUBTITLE,
+                  PROJECT_OUTPUT, REFERENCE, TEMP)
+    #: 参考素材的子类 —— 决定前端用哪种方式预览、以及怎么喂给生成上下文。
+    REFERENCE_KINDS: Final = ("text", "image", "video", "audio")
 
 
 class AssetStatus:
@@ -82,6 +88,20 @@ class AssetStatus:
     READY: Final = "READY"
     FAILED: Final = "FAILED"
     ARCHIVED: Final = "ARCHIVED"
+
+
+class ScriptSectionStatus:
+    """脚本分段状态。
+
+    一集脚本按幕切分后逐幕写作，因此需要区分「只有要点」和「正文已写好」，
+    工作台据此标色，并决定续写时把哪些前文带进上下文。
+    """
+    #: 只有标题/要点，正文还没写
+    DRAFT: Final = "DRAFT"
+    #: 正文已写好
+    READY: Final = "READY"
+
+    ALL: Final = (DRAFT, READY)
 
 
 class ShotStatus:
