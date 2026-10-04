@@ -26,7 +26,9 @@ from . import runtime
 class LocalImageProvider(ImageProvider):
     name = "local"
     display_name = "本地渲染引擎（PIL 漫画分镜）"
-    capabilities = ("text_to_image", "storyboard_frame", "offline", "fast")
+    # resolution: 声明本 provider 可被要求的档位（PIL 合成任意尺寸，不设限）
+    capabilities = ("text_to_image", "storyboard_frame", "offline", "fast",
+                    "resolution:720p,1080p,2K,4K")
     doc = "内置引擎，无需任何外部依赖，生成漫画教学风格分镜关键帧。"
 
     def generate(self, *, prompt: str, negative_prompt: str = "", width: int = 1280,
@@ -68,7 +70,11 @@ class ComfyUIImageProvider(ImageProvider):
     name = "comfyui"
     display_name = "ComfyUI（本地图形工作流）"
     requires_api_key = False
-    capabilities = ("text_to_image", "image_to_image", "workflow_json", "lora", "controlnet")
+    #: ``resolution:`` = 可被要求的档位；``native_resolution:`` = 模型原生档位。
+    #: 目前主力模型 Qwen-Image 2.1 原生 2K（16:9 官方 2752x1536），超过原生档位只发
+    #: warning 不阻断，但调用方能从返回里看到「这是超采样，不是更高画质」。
+    capabilities = ("text_to_image", "image_to_image", "workflow_json", "lora", "controlnet",
+                    "resolution:720p,1080p,2K,4K", "native_resolution:2K")
     doc = "通过 ComfyUI HTTP API 提交工作流。需在设置中配置 COMFYUI_BASE_URL 并保持服务运行。"
 
     # 连接信息动态读取：设置页改完即时生效，不需要重启进程

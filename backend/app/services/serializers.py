@@ -55,6 +55,13 @@ def asset_brief(asset: Asset | None) -> dict[str, Any] | None:
         "shot_id": asset.shot_id,
         "scene_id": asset.scene_id,
         "character_id": asset.character_id,
+        # 血缘：产物由哪一版提示词编译而来（新层字段，老数据为空 —— 只增不删）
+        "prompt_version_id": asset.prompt_version_id,
+        "role": asset.role,
+        "subject_type": asset.subject_type,
+        "subject_id": asset.subject_id,
+        "variant_id": asset.variant_id,
+        "provenance": asset.provenance or {},
         "extra": asset.extra or {},
         "created_at": iso(asset.created_at),
         "updated_at": iso(asset.updated_at),

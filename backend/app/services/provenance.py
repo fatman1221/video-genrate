@@ -212,6 +212,11 @@ def _asset_ref(asset: Asset) -> dict[str, Any]:
 
 
 def _prompt_version_ref(version: PromptVersion) -> dict[str, Any]:
+    """血缘链里的「这一版提示词」节点。
+
+    除了元数据也带上**正文本身**：反查的意义就是回答"当时到底发了什么指令"，
+    只给一个 id 还得再去查一次，等于没闭环。
+    """
     return {
         "id": version.id, "version": version.version,
         "provider": version.provider, "model": version.model,
@@ -220,6 +225,13 @@ def _prompt_version_ref(version: PromptVersion) -> dict[str, Any]:
         "parameters": version.parameters or {},
         "recipe": version.recipe or {},
         "status": version.status,
+        "compiled_prompt": version.compiled_prompt or "",
+        "negative_prompt": version.negative_prompt or "",
+        # 编译输入快照（实体 id + 版本，不是哈希）：用来判断"当时依据的设定是哪一版"
+        "compiled_from": version.compiled_from or {},
+        "continuity_lock_ids": list(version.continuity_lock_ids or []),
+        # 参考图槽位（含 REF/PLAN/IMG 三态与准入状态）
+        "reference_assets": list(version.reference_assets or []),
         "created_at": version.created_at.isoformat() if version.created_at else None,
     }
 

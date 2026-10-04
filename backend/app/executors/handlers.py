@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..core.constants import (
@@ -112,26 +113,57 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
     # 项目级画风锚定：set_image_provider 写进 project.extra 的前缀/负向词在此生效。
     # 没有它的话，22 个镜头各自成图、色调与质感会明显跳。
     prefix = (proj_extra.get("scene_prompt_prefix") or "").strip()
-    prompt = shot.image_prompt or shot.description or shot.code
-    if prefix and not prompt.startswith(prefix):
-        prompt = f"{prefix}, {prompt}"
-    negative = shot.negative_prompt or proj_extra.get("negative_prompt") or ""
+
+    # ---------------------------------------------------------------- #
+    # 提示词与参考图来源：**新层（编译产物）优先，老字段兜底**
+    #
+    # 新层的唯一事实来源是 Prompt / PromptVersion（见 services/prompt_compiler.py）。
+    # 老字段（shot.image_prompt / negative_prompt / character_ids）只作单向兼容投影 ——
+    # 这里读它们**仅当该镜头还没有编译过提示词**，保证老项目不改一行也能继续跑。
+    #
+    # ⚠️ 用编译产物时**不再拼 project 级 scene_prompt_prefix**：编译器已经把画风/锚点
+    #    组装进正文，再拼一次会重复。负向词同理，直接用编译结果。
+    # ---------------------------------------------------------------- #
+    prompt_version = _current_prompt_version(ctx.db, shot, "image")
+    prompt: str | None = None
+    negative: str | None = None
+    reference_image: str | None = None
+    reference_slots: list[dict[str, Any]] = []
+    if prompt_version is not None:
+        prompt = (prompt_version.compiled_prompt or "").strip() or None
+        negative = (prompt_version.negative_prompt or "").strip()
+        reference_slots = list(prompt_version.reference_assets or [])
+        reference_image = _pick_reference_image(reference_slots)
+
+    if prompt is None:  # 老链路：未编译过
+        prompt = shot.image_prompt or shot.description or shot.code
+        if prefix and not prompt.startswith(prefix):
+            prompt = f"{prefix}, {prompt}"
+        negative = shot.negative_prompt or proj_extra.get("negative_prompt") or ""
+
     # 人物一致性：镜头若绑定角色，取该角色最新的定妆图作为参考图
     # （IPAdapter / Qwen-Image-Edit 类工作流用 {{reference_image}} 占位符接收）
-    reference_image = None
-    char_ids = list(shot.character_ids or [])
-    if char_ids:
-        for cid in char_ids:
-            char = ctx.db.get(Character, cid) if cid else None
-            ref_asset_id = getattr(char, "reference_asset_id", None) if char else None
-            if ref_asset_id:
-                ref_asset = ctx.db.get(Asset, ref_asset_id)
-                if ref_asset and Path(ref_asset.file_path).exists():
-                    reference_image = ref_asset.file_path
-                    break
+    # 新层已通过 reference_slots 给了参考图就不再走这条老路。
+    if reference_image is None:
+        char_ids = list(shot.character_ids or [])
+        if char_ids:
+            for cid in char_ids:
+                char = ctx.db.get(Character, cid) if cid else None
+                ref_asset_id = getattr(char, "reference_asset_id", None) if char else None
+                if ref_asset_id:
+                    ref_asset = ctx.db.get(Asset, ref_asset_id)
+                    if ref_asset and Path(ref_asset.file_path).exists():
+                        reference_image = ref_asset.file_path
+                        break
+
+    # 输出尺寸：任务 payload（由 resolution 解析而来）> 项目默认。
+    # 分辨率档位在 Skill 层已按 Provider 能力声明校验过，这里只负责落实。
+    width = int(payload.get("width") or project.width or settings.default_image_width)
+    height = int(payload.get("height") or project.height or settings.default_image_height)
+
     result = provider.generate(
-        prompt=prompt, negative_prompt=negative,
-        width=project.width, height=project.height,
+        prompt=prompt, negative_prompt=negative or "",
+        width=width, height=height,
         seed=payload.get("seed"),
         reference_image=reference_image,
         parameters={
@@ -150,7 +182,14 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
     asset = assets_svc.ingest_result(
         ctx.db, project_id=project.id, result=result, asset_type=AssetType.IMAGE,
         name=f"{shot.code} 关键帧", scene_id=shot.scene_id, shot_id=shot.id,
-        task_id=ctx.task.id, extra={"role": "keyframe"},
+        task_id=ctx.task.id, extra={"role": "keyframe", "applied_resolution": payload.get("resolution") or ""},
+        # 血缘闭环：产物直接挂到产生它的 PromptVersion 上，
+        # 让 get_asset_provenance 不必靠猜是哪一版提示词
+        prompt_version_id=prompt_version.id if prompt_version else None,
+        role="keyframe", subject_type="shot", subject_id=shot.id,
+        provenance=({"prompt_id": prompt_version.prompt_id, "prompt_version": prompt_version.version,
+                     "source": "compiled"} if prompt_version else
+                    {"source": "legacy_shot_fields", "note": "该镜头尚未编译提示词，回落到 Shot 老字段"}),
     )
     shot.image_asset_id = asset.id
     shot.image_status = "READY"
@@ -161,6 +200,39 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
     ctx.event("image.finished", f"Shot {shot.code} 关键帧生成完成", asset_id=asset.id, url=asset.url)
     _maybe_complete_step(ctx.db, project, "image")
     return asset
+
+
+def _current_prompt_version(db: Session, shot: Shot, prompt_type: str):
+    """取镜头该类型提示词的**当前版本**（新层唯一事实来源）。
+
+    没有就返回 None —— 调用方据此决定是否回落到 Shot 老字段。
+    """
+    from ..models import Prompt, PromptVersion  # 局部导入：避免顶层循环依赖
+
+    prompt = db.execute(
+        select(Prompt).where(Prompt.shot_id == shot.id, Prompt.type == prompt_type)
+    ).scalars().first()
+    if prompt is None or not prompt.current_version_id:
+        return None
+    return db.get(PromptVersion, prompt.current_version_id)
+
+
+def _pick_reference_image(reference_slots: list[dict[str, Any]]) -> str | None:
+    """从编译产物的参考图槽位里挑一张可用作 ``{{reference_image}}`` 的图。
+
+    ⚠️ 只认 ``kind == "REF"``（项目内真实存在、可投产）且 ``admission_status == ready``
+    —— ``PLAN-`` 是创作者自备、项目内并不存在的占位，拿它当生产输入会静默跑到别的图上。
+    槽位已按 order 排好，取第一个可用即可（多参考图工作流另说）。
+    """
+    for slot in reference_slots or []:
+        if str(slot.get("kind") or "REF").upper() != "REF":
+            continue
+        if slot.get("admission_status") != "ready":
+            continue
+        path = slot.get("file_path")
+        if path and Path(path).exists():
+            return str(path)
+    return None
 
 
 def _workdir(ctx: TaskContext, sub: str) -> Path:
@@ -414,8 +486,15 @@ def handle_generate_video(ctx: TaskContext) -> dict[str, Any]:
                          or proj_extra.get("video_provider")
                          or settings.default_provider_video)
     ctx.progress(20, f"渲染 {shot.code} 视频")
+    # 提示词来源与出图同一套规则：新层编译产物优先，老字段兜底。
+    # ⚠️ 视频尺寸**不**从 payload 取 —— i2v 模板对尺寸有硬约束（1376x768），
+    #    首帧由 _ensure_shot_image 保证，改这里会连带影响首帧一致性。
+    video_version = _current_prompt_version(ctx.db, shot, "video")
+    video_prompt = None
+    if video_version is not None:
+        video_prompt = (video_version.compiled_prompt or "").strip() or None
     result = provider.generate(
-        prompt=shot.video_prompt or shot.description or shot.code,
+        prompt=video_prompt or shot.video_prompt or shot.description or shot.code,
         image_path=frame.file_path,
         width=project.width, height=project.height,
         duration=float(payload.get("duration") or shot.duration or settings.default_shot_duration),
@@ -442,6 +521,12 @@ def handle_generate_video(ctx: TaskContext) -> dict[str, Any]:
         ctx.db, project_id=project.id, result=result, asset_type=AssetType.VIDEO,
         name=f"{shot.code} 视频", scene_id=shot.scene_id, shot_id=shot.id,
         task_id=ctx.task.id, parent_asset_id=frame.id, extra={"role": "shot"},
+        prompt_version_id=video_version.id if video_version else None,
+        role="shot", subject_type="shot", subject_id=shot.id,
+        provenance=({"prompt_id": video_version.prompt_id, "prompt_version": video_version.version,
+                     "source": "compiled"} if video_version else
+                    {"source": "legacy_shot_fields",
+                     "note": "该镜头尚未编译视频提示词，回落到 Shot 老字段"}),
     )
     shot.video_asset_id = asset.id
     shot.video_status = "READY"

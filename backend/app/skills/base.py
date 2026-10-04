@@ -113,6 +113,11 @@ class Skill:
                                elapsed_ms=int((time.time() - started) * 1000))
 
         elapsed = int((time.time() - started) * 1000)
+        # 允许 handler 返回 ``(Task, 附加信息)``：既保留「返回 Task 就产出 task_id」的既有契约，
+        # 又能额外回一些调用方需要立刻看到的东西（如解析后的分辨率、能力校验 warning）。
+        extra: dict[str, Any] = {}
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], Task):
+            result, extra = result[0], (result[1] or {})
         if isinstance(result, Task):
             return SkillResult(
                 ok=True, status="ACCEPTED", task_id=result.id,
@@ -120,6 +125,7 @@ class Skill:
                     "taskId": result.id, "task_id": result.id, "status": result.status,
                     "type": result.type, "name": result.name,
                     "note": "任务已入队，请通过 get_task_status 轮询进度",
+                    **extra,
                 },
                 elapsed_ms=elapsed,
             )

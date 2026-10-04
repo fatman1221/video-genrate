@@ -31,6 +31,7 @@ from ..services import continuity as continuity_svc
 from ..services import generation_plans as plans_svc
 from ..services import prompt_compiler as compiler_svc
 from ..services import provenance as provenance_svc
+from ..services import resolution as resolution_svc
 from ..services import visual_bible as vb_svc
 from .base import SkillContext, SkillError, skill
 
@@ -564,9 +565,35 @@ _COMPILE_PROPS = {
 def _compile(ctx: SkillContext, shot_id: str, prompt_type: str, **fields: Any) -> dict[str, Any]:
     shot = _require_shot(ctx, shot_id)
     _assert_not_none(fields, tuple(k for k in _COMPILE_PROPS if k != "shot_id"))
+    fields = _drop_none(fields)
+
+    # ⚠️ 调用约定：``compile_prompt`` 只接受三件事 —— ``options`` 字典（provider/model/
+    #    width/height/aspect_ratio/resolution/parameters/extra_negative）、``raw_prompt``
+    #    与 ``mirror``。字段必须打包进 options，直接 **fields 展开会
+    #    "got an unexpected keyword argument"（只在传了可选字段时才炸，极易漏测）。
+    options = {k: fields[k] for k in ("provider", "model", "width", "height", "aspect_ratio",
+                                      "resolution", "parameters", "extra_negative")
+               if k in fields}
+    # 给了档位就把具体像素一并固化，便于血缘里直接看到"这版是按 3840x2160 编的"
+    if options.get("resolution"):
+        project = ctx.db.get(Project, shot.project_id)
+        try:
+            width, height = resolution_svc.resolve_size(
+                options["resolution"], options.get("aspect_ratio"),
+                fallback=(int(options.get("width") or (project.width if project else 1280)),
+                          int(options.get("height") or (project.height if project else 720))),
+            )
+        except resolution_svc.ResolutionError as exc:
+            raise SkillError(str(exc), code="BAD_RESOLUTION") from exc
+        options.setdefault("width", width)
+        options.setdefault("height", height)
+        options["aspect_ratio"] = resolution_svc.normalize_aspect(options.get("aspect_ratio"))
+
     try:
         version = compiler_svc.compile_prompt(
-            ctx.db, shot, prompt_type=prompt_type, actor=ctx.actor, **fields
+            ctx.db, shot, prompt_type=prompt_type, actor=ctx.actor,
+            options=options, raw_prompt=fields.get("raw_prompt"),
+            mirror=bool(fields.get("mirror", True)),
         )
     except compiler_svc.CompileError as exc:
         raise SkillError(str(exc), code="COMPILE_FAILED") from exc

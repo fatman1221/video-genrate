@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -44,6 +43,7 @@ from ..models import (
     Asset, GenerationPlan, GenerationPlanItem, Project, PromptVersion, ProviderRecord, Shot, new_id,
 )
 from . import agent_log
+from . import resolution as resolution_svc
 from .tasks import create_task
 
 PLAN_STATUS = ("DRAFT", "PREVIEWED", "CONFIRMED", "RUNNING", "DONE", "CANCELLED", "EXPIRED")
@@ -64,10 +64,6 @@ EST_SECONDS = {"image": 60, "video": 360, "voice": 20, "music": 60}
 
 #: 确认有效期
 DEFAULT_TTL_MINUTES = 30
-
-#: provider 能力里声明分辨率的写法：``resolution:4K,2K`` 或 ``resolution=4K``
-_RESOLUTION_CAP_RE = re.compile(r"^resolution\s*[:=]\s*(.+)$", re.IGNORECASE)
-
 
 class PlanError(ValueError):
     """计划流程违例（指纹不符、状态不对、引用 PLAN 态资产等）。"""
@@ -260,17 +256,26 @@ def check_provider_capability(
         return False, f"Provider「{provider}」的类别是 {record.kind}，不适用于 {modality}"
     if not resolution:
         return True, ""
-    supported: set[str] = set()
-    for cap in record.capabilities or []:
-        match = _RESOLUTION_CAP_RE.match(str(cap))
-        if match:
-            supported |= {part.strip().upper() for part in match.group(1).split(",") if part.strip()}
+    # 档位写法统一由 resolution 模块归一化（``2160p`` → ``4K``），
+    # 避免同一件事在能力声明、入参、错误信息里出现三种拼法
+    try:
+        wanted = resolution_svc.normalize_resolution(resolution)
+    except resolution_svc.ResolutionError as exc:
+        return False, str(exc)
+    supported = resolution_svc.supported_of(record.capabilities)
     if not supported:
+        # 没声明分辨率能力 = 不做这项校验（免得把"没声明"误判成"不支持"）
         return True, ""
-    if resolution.strip().upper() not in supported:
+    if wanted not in supported:
         return False, (
-            f"Provider「{provider}」不支持分辨率 {resolution}，"
-            f"它声明支持：{', '.join(sorted(supported))}"
+            f"Provider「{provider}」不支持分辨率 {wanted}，"
+            f"它声明支持：{', '.join(supported)}"
+        )
+    native = resolution_svc.native_resolution_of(record.capabilities)
+    if native and resolution_svc.tier_rank(wanted) > resolution_svc.tier_rank(native):
+        return True, (
+            f"Provider「{provider}」原生档位为 {native}，{wanted} 属于超采样"
+            f"（不等于更高画质，建议原生出图后用超分链放大）"
         )
     return True, ""
 

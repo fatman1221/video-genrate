@@ -1238,26 +1238,52 @@ Project.workflow_state
 
 > 写操作**全部走 Skill 层**（与现有约定一致）。
 
-### 8.4 4K 生图支持
+### 8.4 分辨率档位支持（4K 生图）
 
-不新增 Skill，**扩展现有 `generate_image` / `generate_all_images` 的入参**：
+**不新增 Skill**，扩展现有 `generate_image` / `regenerate_image` / `generate_all_images` 的入参：
 
 ```json
 {
-  "resolution": "4K",          // 新增：4K / 2K / 1080p / 720p
-  "width": 3840,               // 已有
+  "resolution": "4K",          // 720p / 1080p / 2K / 4K（不传 = 维持项目默认尺寸）
+  "aspect_ratio": "16:9",      // 16:9 / 9:16 / 1:1 / 4:3 / 3:2
+  "width": 3840,               // 仍可直传，优先于 resolution
   "height": 2160,
-  "aspect_ratio": "16:9",      // 新增
   "provider": "comfyui",
-  "model": "qwen_image_2.1_int8_convrot",
-  "reference_images": [...],
-  "prompt": "...",
-  "negative_prompt": "...",
-  "parameters": {}
+  "workflow_name": "qwen_image_scene",
+  "seed": 12345
 }
 ```
 
-**模型不写死**：`resolution` 由 **Provider 能力声明**校验（`ProviderRecord.capabilities`），不支持则编译期失败并说明该 provider 支持哪些。
+**实现（`backend/app/services/resolution.py`）**
+
+| 关注点 | 做法 |
+|---|---|
+| 数值只在表里写一次 | `PRESETS[档位][画幅] = (w, h)`，业务层只调 `resolve_size()`。2K 那一行直接对齐 Qwen-Image 2.1 官方推荐尺寸 |
+| 模型不写死 | Provider 用 `capabilities` 声明：`resolution:720p,1080p,2K,4K`（可被要求的档位）+ `native_resolution:2K`（原生档位）。校验走 `generation_plans.check_provider_capability` |
+| 不静默降级 | 请求档位高于 `native_resolution` 时**放行但回 warning**（"超采样不等于更高画质，建议原生出图后走超分链"），随 `generate_image` 返回给调用方；低于声明的档位则**直接失败**并列出它支持的档位 |
+| 未知档位/画幅 | 报错并列出可选值（`2160p`/`UHD` 等别名会归一化成 `4K`） |
+
+**编译器产物灌入既有出图链路**（`executors/handlers.py`）
+
+`_ensure_shot_image` 的取值顺序改为：
+
+1. **提示词 / 负向词 / 参考图**：先取该镜头 `Prompt.image` 的当前 `PromptVersion`
+   （`compiled_prompt` / `negative_prompt` / `reference_assets` 里 `kind=REF` 且 `admission_status=ready` 的槽位）；
+   **没有编译过**才回落到 `Shot.image_prompt` / `negative_prompt` / `character_ids → reference_asset_id`。
+   ⚠️ 用编译产物时**不再叠加** `project.extra.scene_prompt_prefix`（编译器已把画风组装进正文，再叠一次会重复）。
+2. **尺寸**：任务 payload 的 `width/height`（由 `resolution` 解析而来）> 项目默认。
+3. **血缘回填**：产物入库时写 `assets.prompt_version_id`，并把 `role/subject_type/subject_id` 与
+   `provenance={prompt_id, prompt_version, source}` 一起落库 —— `get_asset_provenance` 从此不必再猜是哪一版提示词。
+
+视频侧（`handle_generate_video`）同样优先读 `Prompt.type="video"` 的当前版本。
+⚠️ **视频尺寸不从 payload 取**：i2v 模板对尺寸有硬约束，改它会影响首帧一致性与耗时。
+
+**实测（本机 RTX 4070 Ti SUPER 16GB）**
+
+| 档位 | 结果 |
+|---|---|
+| 2K（2752×1536） | ✅ 真实 ComfyUI 出图成功，3.44 MB，**130 秒**，`prompt_version_id` 已闭环 |
+| 4K（3840×2160） | ⚠️ **闸门正确放行并告警**（8.29 MP、`above_native=True`、提示"超采样≠更高画质"）， 但本机 16GB 显存下采样极慢、本轮未等完成即中止。**结论：4K 通路可用，暂不作为默认档位** —— 与既有事实一致（成片三环皆 90–106 万像素，2K 已是原生上限，4K 只适合单独出静态素材）。 |
 
 ---
 
@@ -1469,7 +1495,7 @@ Phase 4–8 期间先用两个**零依赖可重跑**的临时 harness 顶上（�
 | **6** | Reference / Continuity | 槽位绑定 + 锁 + 增量 + stale 判定 | ✅ 已完成（槽位/用途/控制边界落在 prompt_versions；锁面卫生校验 + 两种假命中防护；stale 动态判定） |
 | **7** | **Preview / Confirm / Produce** | 计划 + 指纹 + 物化 | ✅ 已完成（预览零资源消耗实测 0→0；错误指纹拒绝；重复物化拒绝；PLAN 态拒投产） |
 | **8** | Skill / API | 30 个新 Skill + 8 个读接口 | ✅ 已完成（Skill 94→124，`visual=12/plan=7/image=5/character=2/storyboard=2/asset=1/video=1`；8 个只读端点全部 200；68 项隔离库回归断言通过；**并修掉一个由本次迁移引入的回归**：`characters(project_id, code)` 全量唯一索引打挂不写 code 的既有 `bootstrap_project` → 改部分唯一索引 `WHERE code != ''`） |
-| **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | 端到端出 1 张 4K 图 |
+| **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | ✅ 已完成（新增 `services/resolution.py`；3 个出图 Skill 支持 `resolution`/`aspect_ratio`；`_ensure_shot_image`/`handle_generate_video` 改为「编译产物优先、老字段兜底」；产物回填 `prompt_version_id` 闭合血缘。隔离库 E2E **41 项断言通过**；真实 ComfyUI 2K 出图成功（2752×1536 / 130s）。**4K 闸门验证有效但暂不作为默认档位**，见 §8.4） |
 | **10** | **测试** | pytest 全套 14 类 | 全绿 |
 | **11** | 文档 | 更新 README / ARCHITECTURE / Agent 调用指南 | — |
 | **12** | **最终 Review** | 逐 Phase 复查 + 旧功能回归 | `e2e_check.py` 通过 |

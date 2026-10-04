@@ -44,8 +44,18 @@ def ingest_result(
     parent_asset_id: str | None = None,
     move: bool = False,
     extra: dict[str, Any] | None = None,
+    prompt_version_id: str | None = None,
+    role: str = "",
+    subject_type: str = "",
+    subject_id: str | None = None,
+    variant_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> Asset:
-    """把 Provider 产物落到存储并登记为 Asset。"""
+    """把 Provider 产物落到存储并登记为 Asset。
+
+    末尾几个参数用于**血缘闭环**：把产物直接挂到产生它的 PromptVersion 与主体上，
+    这样 ``get_asset_provenance`` 不用靠猜（历史上只能从 Asset 反查 Shot，再猜是哪版提示词）。
+    """
     src = Path(result.file_path)
     if not src.exists():
         raise FileNotFoundError(f"生成结果文件不存在: {result.file_path}")
@@ -92,6 +102,12 @@ def ingest_result(
         source=source,
         parent_asset_id=parent_asset_id,
         task_id=task_id,
+        prompt_version_id=prompt_version_id,
+        role=role,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        variant_id=variant_id,
+        provenance=provenance or {},
         extra={**(result.extra or {}), **(extra or {})},
     )
     db.add(asset)

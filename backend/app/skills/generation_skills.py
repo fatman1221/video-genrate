@@ -10,8 +10,11 @@ from sqlalchemy import select
 
 from ..core.constants import AssetType, ShotStatus, TaskStatus, TaskType
 from ..models import Asset, Project, Shot
+from ..config import settings
 from ..services import assets as assets_svc
+from ..services import generation_plans as plans_svc
 from ..services import projects as projects_svc, serializers as S, tasks as tasks_svc
+from ..services import resolution as res_svc
 from .base import SkillContext, SkillError, skill
 
 
@@ -29,6 +32,39 @@ def _shot(db, shot_id: str) -> Shot:
     return shot
 
 
+def _prepare_image_size(db, project: Project, *, provider: str | None,
+                        resolution: Any, aspect_ratio: Any,
+                        width: int | None, height: int | None) -> dict[str, Any]:
+    """把（resolution, aspect_ratio, width, height）定成一组具体参数并做能力校验。
+
+    优先级：显式 width/height > resolution×aspect_ratio > 项目默认尺寸。
+    分辨率由 **Provider 能力声明**校验（模型不写死在这里）；超出模型原生档位只发
+    warning，让调用方看得见，不静默降级。
+    """
+    provider_name = (provider or (project.extra or {}).get("image_provider")
+                     or settings.default_provider_image)
+    try:
+        info = res_svc.describe(resolution, aspect_ratio,
+                                fallback=(int(width or project.width or 1280),
+                                          int(height or project.height or 720)))
+    except res_svc.ResolutionError as exc:
+        raise SkillError(str(exc), code="BAD_RESOLUTION") from exc
+
+    if width or height:
+        info["width"] = int(width or info["width"])
+        info["height"] = int(height or info["height"])
+        info["megapixels"] = round(info["width"] * info["height"] / 1_000_000, 2)
+
+    ok, note = plans_svc.check_provider_capability(
+        db, "image", provider_name, info.get("resolution") or ""
+    )
+    if not ok:
+        raise SkillError(note, code="RESOLUTION_UNSUPPORTED")
+    info["provider"] = provider_name
+    info["provider_note"] = note
+    return info
+
+
 # --------------------------------------------------------------------------- #
 # Image
 # --------------------------------------------------------------------------- #
@@ -39,28 +75,47 @@ def _shot(db, shot_id: str) -> Shot:
     input_schema={"type": "object", "properties": {
         "project_id": {"type": "string"}, "shot_id": {"type": "string"},
         "provider": {"type": "string", "description": "local / comfyui / cloud"},
-        "prompt": {"type": "string", "description": "覆盖镜头自带的 image_prompt"},
+        "prompt": {"type": "string", "description": "覆盖镜头的提示词（既有链路字段；新链路请用 compile_image_prompt）"},
         "workflow_name": {"type": "string",
                           "description": "ComfyUI 工作流模板名（如 qwen_image_scene）。provider=comfyui 时使用"},
         "workflow_json": {"type": "object", "description": "直接传入 API 格式工作流，优先于 workflow_name"},
+        "resolution": {"type": "string", "enum": ["720p", "1080p", "2K", "4K"],
+                       "description": "分辨率档位。由 Provider 能力声明校验；不传则用项目默认尺寸"},
+        "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:2"],
+                         "description": "画幅。仅在与 resolution 同传时生效"},
         "width": {"type": "integer"}, "height": {"type": "integer"}, "seed": {"type": "integer"}},
         "required": ["shot_id"]},
 )
 def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = None,
                    provider: str | None = None, prompt: str | None = None,
                    workflow_name: str | None = None, workflow_json: dict[str, Any] | None = None,
+                   resolution: str | None = None, aspect_ratio: str | None = None,
                    width: int | None = None, height: int | None = None,
                    seed: int | None = None):
     shot = _shot(ctx.db, shot_id)
+    project = _project(ctx.db, project_id or shot.project_id)
+    size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
+                               aspect_ratio=aspect_ratio, width=width, height=height)
     if prompt:
+        # ⚠️ 兼容投影：既有链路仍从 Shot 读提示词；新链路请走 compile_image_prompt
         shot.image_prompt = prompt
-    return tasks_svc.create_task(
-        ctx.db, project_id=project_id or shot.project_id, type=TaskType.GENERATE_IMAGE,
+    task = tasks_svc.create_task(
+        ctx.db, project_id=project.id, type=TaskType.GENERATE_IMAGE,
         name=f"生成关键帧 {shot.code}", shot_id=shot.id,
-        payload={"provider": provider, "seed": seed, "width": width, "height": height,
+        payload={"provider": provider, "seed": seed,
+                 "width": size["width"], "height": size["height"],
+                 "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"],
                  "workflow_name": workflow_name, "workflow_json": workflow_json},
         created_by=ctx.actor, commit=False,
     )
+    # 返回 (Task, 附加信息)：task_id 契约不变，另外把解析后的尺寸与 warning 一并回给调用方
+    return task, {
+        "shot_id": shot.id,
+        "size": {k: size[k] for k in ("resolution", "aspect_ratio", "width", "height",
+                                      "megapixels", "above_native")},
+        "provider": size["provider"], "provider_note": size["provider_note"],
+        "warnings": size["warnings"],
+    }
 
 
 @skill(
@@ -72,6 +127,9 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
         "prompt": {"type": "string"}, "seed": {"type": "integer"},
         "workflow_name": {"type": "string"},
         "workflow_json": {"type": "object"},
+        "resolution": {"type": "string", "enum": ["720p", "1080p", "2K", "4K"]},
+        "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:2"]},
+        "width": {"type": "integer"}, "height": {"type": "integer"},
         "keep_old": {"type": "boolean", "default": True}},
         "required": ["shot_id"]},
 )
@@ -79,20 +137,34 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
                      prompt: str | None = None, seed: int | None = None,
                      workflow_name: str | None = None,
                      workflow_json: dict[str, Any] | None = None,
+                     resolution: str | None = None, aspect_ratio: str | None = None,
+                     width: int | None = None, height: int | None = None,
                      keep_old: bool = True):
     shot = _shot(ctx.db, shot_id)
+    project = _project(ctx.db, shot.project_id)
+    size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
+                               aspect_ratio=aspect_ratio, width=width, height=height)
     if prompt:
         shot.image_prompt = prompt
     shot.image_asset_id = None
     shot.image_status = "PENDING"
     shot.status = ShotStatus.PENDING
-    return tasks_svc.create_task(
+    task = tasks_svc.create_task(
         ctx.db, project_id=shot.project_id, type=TaskType.GENERATE_IMAGE,
         name=f"重生成关键帧 {shot.code}", shot_id=shot.id,
         payload={"provider": provider, "seed": seed, "regenerate": True, "keep_old": keep_old,
+                 "width": size["width"], "height": size["height"],
+                 "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"],
                  "workflow_name": workflow_name, "workflow_json": workflow_json},
         created_by=ctx.actor, commit=False,
     )
+    return task, {
+        "shot_id": shot.id,
+        "size": {k: size[k] for k in ("resolution", "aspect_ratio", "width", "height",
+                                      "megapixels", "above_native")},
+        "provider": size["provider"], "provider_note": size["provider_note"],
+        "warnings": size["warnings"],
+    }
 
 
 @skill(
@@ -245,6 +317,10 @@ def get_video_generation_status(ctx: SkillContext, *, task_id: str | None = None
     input_schema={"type": "object", "properties": {
         "project_id": {"type": "string"}, "provider": {"type": "string"},
         "workflow_name": {"type": "string", "description": "ComfyUI 工作流模板名，如 qwen_image_scene"},
+        "resolution": {"type": "string", "enum": ["720p", "1080p", "2K", "4K"],
+                       "description": "分辨率档位，整批统一。由 Provider 能力声明校验"},
+        "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:2"]},
+        "width": {"type": "integer"}, "height": {"type": "integer"},
         "concurrency": {"type": "integer", "default": 1,
                         "description": "并发数。本地 ComfyUI 串行更稳，建议 1"},
         "only_missing": {"type": "boolean", "default": True},
@@ -252,13 +328,21 @@ def get_video_generation_status(ctx: SkillContext, *, task_id: str | None = None
                   "description": "True 时忽略已有关键帧强制重生成（切换工作流后全量重跑）"}}, "required": ["project_id"]},
 )
 def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | None = None,
-                        workflow_name: str | None = None, concurrency: int = 1,
+                        workflow_name: str | None = None,
+                        resolution: str | None = None, aspect_ratio: str | None = None,
+                        width: int | None = None, height: int | None = None,
+                        concurrency: int = 1,
                         only_missing: bool = True, force: bool = False) -> dict[str, Any]:
-    _project(ctx.db, project_id)
+    project = _project(ctx.db, project_id)
+    size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
+                               aspect_ratio=aspect_ratio, width=width, height=height)
     shots = projects_svc.pending_shots(ctx.db, project_id, kind="image") if only_missing else \
         list(ctx.db.execute(select(Shot).where(Shot.project_id == project_id)).scalars())
     if not shots:
-        return {"submitted": [], "count": 0, "message": "所有镜头都已有关键帧"}
+        return {"submitted": [], "count": 0, "message": "所有镜头都已有关键帧",
+                "size": {"resolution": size["resolution"], "width": size["width"],
+                         "height": size["height"]},
+                "warnings": size["warnings"]}
     parent = tasks_svc.create_task(
         ctx.db, project_id=project_id, type=TaskType.CUSTOM, name="批量生成关键帧",
         payload={"batch": "images", "count": len(shots)}, created_by=ctx.actor, commit=False,
@@ -268,12 +352,18 @@ def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | N
         task = tasks_svc.create_task(
             ctx.db, project_id=project_id, type=TaskType.GENERATE_IMAGE,
             name=f"生成关键帧 {shot.code}", shot_id=shot.id,
-            payload={"provider": provider, "workflow_name": workflow_name, "force": force},
+            payload={"provider": provider, "workflow_name": workflow_name, "force": force,
+                     "width": size["width"], "height": size["height"],
+                     "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"]},
             parent_task_id=parent.id, created_by=ctx.actor, commit=False,
         )
         ids.append(task.id)
     ctx.db.commit()
     return {"batch_task_id": parent.id, "task_ids": ids, "count": len(ids),
+            "size": {k: size[k] for k in ("resolution", "aspect_ratio", "width", "height",
+                                          "megapixels", "above_native")},
+            "provider": size["provider"], "provider_note": size["provider_note"],
+            "warnings": size["warnings"],
             "message": f"已提交 {len(ids)} 个关键帧任务"}
 
 
