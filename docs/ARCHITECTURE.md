@@ -135,7 +135,12 @@ def clone_voice(ctx, *, project_id, sample_asset_id, text):
 def handle_voice_clone(ctx): ...
 ```
 
-**新增能力全程不改动已有代码**：`/api/skills` 自动出现新 Skill，Web UI 也自动可用。
+**新增能力全程不改动已有代码**：`/api/skills` 自动出现新 Skill，`agent_cli.py` 也立刻能调。
+
+> ⚠️ **别把"自动可用"理解成"UI 里有界面"**。Web UI 的工作台 / 项目详情 / 资产库 / 系统设置
+> 都是**面向既有流程的固定页面**，不会动态渲染 Skill 列表 —— 顶栏那个图标只是把
+> `/api/skills` 的原始 JSON 开在新窗口。**纯 API 的新能力在 UI 里是看不见的**，
+> 需要人观察 / 干预的话，得另外补页面。
 
 ### 3.3 接入新的 Agent（不止 WorkBuddy）
 
