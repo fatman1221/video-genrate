@@ -158,16 +158,29 @@ _FOREIGN_KEYS: tuple[tuple[str, str, str, str, str, str], ...] = (
     ("characters", "fk_characters_series_id", "series_id", "series", "id", "CASCADE"),
 )
 
-#: 已存在表的新列需要补建的索引（表, 索引名, 列表达式, 是否唯一）。
+#: 已存在表的新列需要补建的索引（表, 索引名, 列表达式, 是否唯一, 部分索引条件）。
 #: ``create_all`` 只建新表，老表靠 ALTER 补的列不会自动带索引，这里显式补齐。
 #: 必须在 backfill 之后执行（见 init_db 注释）。
-_ADDED_INDEXES: tuple[tuple[str, str, str, bool], ...] = (
-    ("characters", "uq_characters_project_code", "project_id, code", True),
-    ("characters", "ix_characters_bible_id", "bible_id", False),
-    ("shots", "ix_shots_location_id", "location_id", False),
-    ("assets", "ix_assets_prompt_version_id", "prompt_version_id", False),
-    ("assets", "ix_assets_role", "role", False),
-    ("quality_checks", "ix_quality_checks_rule_tier", "rule_tier", False),
+#:
+#: ⚠️ ``characters(project_id, code)`` **必须是部分唯一索引**（``code != ''``）：
+#: 既有流程（如 ``bootstrap_project``）建角色时根本不写 code，同一项目下三个角色的
+#: code 都是空串；若建全量唯一索引，第二次插入就会
+#: ``UNIQUE constraint failed``，把既有能力直接打挂。
+#: 语义上我们要的本来就是「**已分配**的代号在同一项目内唯一」。
+_ADDED_INDEXES: tuple[tuple[str, str, str, bool, str], ...] = (
+    ("characters", "uq_characters_project_code_nonempty", "project_id, code", True, "code != ''"),
+    ("characters", "ix_characters_bible_id", "bible_id", False, ""),
+    ("shots", "ix_shots_location_id", "location_id", False, ""),
+    ("assets", "ix_assets_prompt_version_id", "prompt_version_id", False, ""),
+    ("assets", "ix_assets_role", "role", False, ""),
+    ("quality_checks", "ix_quality_checks_rule_tier", "rule_tier", False, ""),
+)
+
+#: 需要删除的历史索引（迁移修正用）。
+#: ``uq_characters_project_code`` 是第一版迁移留下的全量唯一索引，会阻断
+#: 不写 code 的既有流程，必须换成上面的部分唯一索引。
+_DROPPED_INDEXES: tuple[tuple[str, str], ...] = (
+    ("characters", "uq_characters_project_code"),
 )
 
 
@@ -207,7 +220,20 @@ def ensure_indexes() -> list[str]:
     executed: list[str] = []
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    for table, name, columns, unique in _ADDED_INDEXES:
+
+    # 先删除需要修正的历史索引
+    for table, name in _DROPPED_INDEXES:
+        if table not in existing_tables:
+            continue
+        try:
+            if name in {ix["name"] for ix in inspector.get_indexes(table)}:
+                with engine.begin() as conn:
+                    conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
+                executed.append(f"{name} DROPPED")
+        except Exception as exc:  # pragma: no cover - 迁移容错
+            executed.append(f"{name} DROP SKIPPED: {exc}")
+
+    for table, name, columns, unique, where_sql in _ADDED_INDEXES:
         if table not in existing_tables:
             continue
         try:
@@ -216,6 +242,8 @@ def ensure_indexes() -> list[str]:
                 continue
             kind = "UNIQUE INDEX" if unique else "INDEX"
             stmt = f"CREATE {kind} IF NOT EXISTS {name} ON {table} ({columns})"
+            if where_sql:
+                stmt += f" WHERE {where_sql}"
             with engine.begin() as conn:
                 conn.execute(text(stmt))
             executed.append(f"{name}({table}.{columns})")

@@ -6,6 +6,7 @@ from .base import (  # noqa: F401
 )
 from . import (  # noqa: F401
     content_skills, generation_skills, pipeline_skills, post_skills, series_skills,
+    studio_skills,
 )
 
 __all__ = [

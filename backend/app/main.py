@@ -21,7 +21,9 @@ from .config import settings
 from .database import init_db, session_scope
 from .executors import load_handlers, maintenance, runner
 from .providers import register_all, reload_from_db, snapshot, sync_providers_table
-from .routers import assets, content, projects, series, settings as settings_router, skills, system, tasks
+from .routers import (
+    assets, content, projects, series, settings as settings_router, skills, studio, system, tasks,
+)
 from .skills import registry as skill_registry
 
 logging.basicConfig(
@@ -90,6 +92,7 @@ app.include_router(assets.router)
 app.include_router(settings_router.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
+app.include_router(studio.router)
 
 
 @app.exception_handler(Exception)

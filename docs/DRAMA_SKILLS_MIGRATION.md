@@ -1,11 +1,15 @@
 # drama-skills → video-genrate 能力迁移
 
-**Phase 1–2 交付物：架构分析 · 能力分析 · 差异表 · 数据模型设计 · ER 图 · 实施计划**
+**交付物：架构分析 · 能力分析 · 差异表 · 数据模型设计 · ER 图 · 实施计划 · 逐 Phase 实施记录**
 
-> 状态：**设计阶段，未修改任何代码**
+> 状态：**Phase 1–8 已完成**（Phase 9–12 待做 —— 见 §12 实施计划表）
 > 日期：2026-10-04
 > 上游仓库：`zenstory-ai/drama-skills` @ `VERSION 0.8.1`（11 个 skill）
 > 目标工程：`video-genrate`（AI Video Agent Studio）
+
+> **本文档的读法**：§1–§9 是**设计**（Phase 1–2 产出，保持原样以便对照）；
+> **实现与设计的偏差集中在 §8.2 与 §12 的「已完成」备注里**，以那里为准。
+> 需要动手改代码前，先看 §12 的当前进度。
 
 ---
 
@@ -1136,51 +1140,88 @@ Project.workflow_state
 > **不为凑数建 CRUD。** 只实现 Agent 真正需要的。
 > drama-skills 的教训：它的 skill 数量是 11 个，每个解决一个完整阶段，而不是 100 个细碎接口。
 
-### 8.2 新增 Skill（15 个）
+### 8.2 新增 Skill（实际交付 30 个，Skill 总数 94 → 124）
 
-**视觉设定类（5）**
+> 设计时估 15 个；实现时按「一个机制一组能力」补齐了读侧与校验侧，**但没有任何 CRUD 凑数**
+> —— 每个 Skill 都对应一个上文机制（设定/变体/锁/编译/计划/血缘），且都能在 §9 数据流里找到位置。
+> 分布：`visual=12 · plan=7 · image=5 · character=2 · storyboard=2 · asset=1 · video=1`。
+
+**视觉设定总纲与风格（4）** `visual`
 
 | Skill | 入参（概要） | 返回 |
 |---|---|---|
-| `create_visual_bible` | project_id, era_anchors, global_rules, text_policy | bible |
-| `update_visual_bible` | bible_id, 局部字段 | bible |
-| `get_visual_bible` | project_id | bible + 全部子实体概要 |
-| `create_style` | project_id, form_card, rendering, lighting, palette, camera_language | style |
+| `create_visual_bible` | project_id, title, visual_logline, era_anchors, global_rules, text_policy | bible（**upsert 语义**，改动即 version+1） |
+| `get_visual_bible` | project_id | bible + styles + 当前风格 + 用途词表 + 形态卡 |
+| `create_style` | project_id, name, form_card, rendering, lighting, palette, camera_language | style（`form_card` 必须命中 6 张之一） |
 | `set_current_style` | project_id, style_id | ok |
 
-**资产类（6）**
+> 原设计的 `update_visual_bible` 未单独建 —— `create_visual_bible` 本身就是按项目 upsert 的，
+> 单独再开一个更新接口属于纯 CRUD 冗余。
+
+**身份 / 变体（6）**
+
+| Skill | 类目 | 说明 |
+|---|---|---|
+| `set_character_identity` | character | 在现有 `create_character` 之上补 `identity_anchors` / `not_identity` / `persistent_performance_facts` / `voice_direction` |
+| `create_look` | character | 角色造型变体（differences 只写相对基准的变化） |
+| `create_location` | visual | 地点身份（spatial_identity） |
+| `create_location_view` | visual | 观看变体（orientation + state_differences） |
+| `create_prop` | visual | 道具身份（identity_anchors + text_policy） |
+| `create_prop_state` | visual | 状态变体（condition / custody / contents） |
+
+> ⚠️ `Character` 沿用现有 `create_character` / `update_character`（**扩展而非替换**），
+> 既有 94 个 Skill 的契约一行未改。
+
+**镜头绑定（2）** `storyboard`
 
 | Skill | 说明 |
 |---|---|
-| `create_character_asset` | 在现有 `create_character` 之上补 `identity_anchors` / `not_identity` / `voice_direction` |
-| `create_look` | 造型变体（base_look_id + differences + validity） |
-| `create_location` | 地点身份（spatial_identity） |
-| `create_location_view` | 观看变体（orientation + state_differences） |
-| `create_prop` | 道具身份（identity_anchors + text_policy） |
-| `create_prop_state` | 状态变体（condition + custody + contents） |
+| `set_shot_bindings` | 绑定角色/道具的**身份或变体**到镜头；**唯一兼容回写入口之一**（回写 `shot.character_ids`，值为角色 id） |
+| `set_shot_location` | 绑定地点；回写 `shot.location` 字符串 |
 
-> ⚠️ `Character` 沿用现有 `create_character` / `update_character`（**扩展而非替换**），避免破坏 94 个 Skill 的既有契约。
-
-**连续性与 Prompt（4）**
+**连续性与校验（4）** `visual`
 
 | Skill | 说明 |
 |---|---|
-| `create_continuity_lock` | 建锁（校验 surface 卫生、scope 合法性） |
-| `create_continuity_delta` | 建增量（before/after/cause） |
-| `compile_image_prompt` | ⭐ 编译图片 Prompt → 新 PromptVersion |
-| `compile_video_prompt` | ⭐ 编译视频 Prompt |
-| `get_prompt` | 取 Prompt + 全部版本 + stale 状态 |
-| `check_prompt_staleness` | 批量检查 stale |
+| `create_continuity_lock` | 建锁（锁面卫生校验 + scope 合法性 + 项目内锁数软提示） |
+| `create_continuity_delta` | 建增量（before / after / cause；`reconciliation_status` 默认最严档） |
+| `verify_continuity_locks` | ⭐ 校验器：逐镜头检查锁面是否逐字在正向正文里 |
+| `list_continuity_locks` | 锁列表 |
 
-**计划类（4）**
+> **`verify_continuity_locks` 的语义（2026-10-04 修正）**：早期实现把「该镜头还没编译过提示词」
+> 也算作违规，导致生产期永远非合规、无法当闸门用。现分两账：
+> `missing_total` = 已有提示词但锁面不在正向正文（**真违规，阻断 `compliant`**）；
+> `not_compiled_total` = 尚未编译（**覆盖度问题，不影响 `compliant`**）。
+> 每镜头返回 `state ∈ {present, missing, not_compiled}`，可直接驱动"补编译"清单。
+
+**Prompt 编译与版本（5）** `image=4 · video=1`
 
 | Skill | 说明 |
 |---|---|
-| `create_generation_plan` | 建计划 + items（不花钱） |
-| `preview_generation_plan` | ⭐ 校验 + 算 fingerprint + 汇总（**不花钱**） |
-| `confirm_generation_plan` | ⭐ 校验 fingerprint → CONFIRMED（**不花钱**） |
+| `compile_image_prompt` | ⭐ 编译图片 Prompt → 落**新版本**（永不覆盖） |
+| `compile_video_prompt` | ⭐ 编译视频 Prompt（含起始帧参考槽位） |
+| `get_prompt` | 取 Prompt + 全版本 + stale 状态 |
+| `list_prompts` | 按项目/镜头列 Prompt（含 stale 标记） |
+| `check_prompt_staleness` | 批量检查 stale（按项目或按单个 prompt） |
+
+**生成计划（7）** `plan`
+
+| Skill | 说明 |
+|---|---|
+| `create_generation_plan` | 建计划 + items（**不花钱**） |
+| `preview_generation_plan` | ⭐ 校验 + 算 fingerprint + 汇总（**不花钱，且绝不建 Task**） |
+| `confirm_generation_plan` | ⭐ 校验 fingerprint → CONFIRMED（**不花钱**；确认只能消费一次） |
 | `materialize_generation_plan` | 创建真实 Task（**这一步才花钱**） |
 | `cancel_generation_plan` | 取消 |
+| `get_generation_plan` | 读单个计划 + items |
+| `list_generation_plans` | 列计划 |
+
+**血缘反查（2）** `asset=1 · visual=1`
+
+| Skill | 说明 |
+|---|---|
+| `get_asset_provenance` | ⭐ 从素材反查完整链路（Asset → PromptVersion → Prompt → Shot → Scene → Storyboard → Project → Task） |
+| `get_prompt_provenance` | ⭐ 从 Prompt 反查编译依据（`compiled_from` 逐项展开并**再次校验实体仍在**，变更则标 `surface_changed`） |
 
 ### 8.3 新增 HTTP 端点（读接口）
 
@@ -1366,7 +1407,17 @@ _ADDED_COLUMNS = {
 
 ### 11.1 现状
 
-**项目零测试。** 无 `tests/`、无 pytest、无 conftest。验证靠 `scripts/e2e_check.py` + 人工验收。
+**项目本来零测试。** 无 `tests/`、无 pytest、无 conftest。既有验证靠 `scripts/e2e_check.py`
+（**会真实出图/出视频，消耗 GPU**）+ 人工验收。
+
+Phase 4–8 期间先用两个**零依赖可重跑**的临时 harness 顶上（都不碰主库、都不触发生成类任务）：
+
+| 脚本 | 覆盖 | 用法 |
+|---|---|---|
+| `backend/_smoke_services.py` | Phase 4–7：视觉设定体系 / 绑定与单向回写 / 连续性锁 / 锁面两种假命中 / Prompt Compiler / 文字政策冲突 / 版本只增不改 + staleness / Preview-Confirm-Produce / 指纹失效 / PLAN 态不可投产 / 血缘反查（53 项断言） | 自带隔离临时库，直接 `python _smoke_services.py` |
+| `backend/_regress_phase8.py` | Phase 8：空库 `bootstrap_project`（索引回归）/ 部分唯一索引语义 / 124 个 Skill 注册表 / 新旧链路共存 / 编译注锁 / Preview 闸门 / 8 个只读端点（68 项断言） | 需先以隔离库启动后端，再 `python _regress_phase8.py` |
+
+> Phase 10 会把它们正式收敛成 `backend/tests/` 下的 pytest 用例；这两个脚本届时删除。
 
 ### 11.2 引入 pytest（Phase 10）
 
@@ -1417,7 +1468,7 @@ _ADDED_COLUMNS = {
 | **5** | **Prompt Compiler** | 八段式渲染 + 注锁 + 卫生校验 | ✅ 已完成（八段 + 强制注锁 + 正文卫生 + 文字政策两层映射 + 单向镜像；53 项冒烟断言通过） |
 | **6** | Reference / Continuity | 槽位绑定 + 锁 + 增量 + stale 判定 | ✅ 已完成（槽位/用途/控制边界落在 prompt_versions；锁面卫生校验 + 两种假命中防护；stale 动态判定） |
 | **7** | **Preview / Confirm / Produce** | 计划 + 指纹 + 物化 | ✅ 已完成（预览零资源消耗实测 0→0；错误指纹拒绝；重复物化拒绝；PLAN 态拒投产） |
-| **8** | Skill / API | 15 个新 Skill + 8 个读接口 | Skill 清单可枚举；Schema 校验生效 |
+| **8** | Skill / API | 30 个新 Skill + 8 个读接口 | ✅ 已完成（Skill 94→124，`visual=12/plan=7/image=5/character=2/storyboard=2/asset=1/video=1`；8 个只读端点全部 200；68 项隔离库回归断言通过；**并修掉一个由本次迁移引入的回归**：`characters(project_id, code)` 全量唯一索引打挂不写 code 的既有 `bootstrap_project` → 改部分唯一索引 `WHERE code != ''`） |
 | **9** | 接入现有出图链路 | `generate_image` 支持 resolution；Compiler 产物灌入现有 handler | 端到端出 1 张 4K 图 |
 | **10** | **测试** | pytest 全套 14 类 | 全绿 |
 | **11** | 文档 | 更新 README / ARCHITECTURE / Agent 调用指南 | — |
