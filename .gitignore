@@ -23,6 +23,8 @@ backend/.venv/
 tools/*/models/
 tools/*/venv/
 tools/*/outputs/
+# 超分操作台的任务产物（源图 + 成图 + meta.json，体积大且可重跑）
+tools/*/web/jobs/
 
 # --------------------------------------------------------------------------- #
 # Python

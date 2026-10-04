@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图片超分操作台 · Real-ESRGAN</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161922; --panel2:#1c202b; --line:#272c3a;
+    --tx:#e6e9ef; --muted:#8b93a7; --dim:#5d6679;
+    --ac:#5b8cff; --ok:#35c88a; --warn:#f0a93b; --err:#ff5c5c;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--tx);
+    font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--ac);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+  input,select{font:inherit}
+
+  /* ---------- 布局 ---------- */
+  header{
+    display:flex;align-items:center;gap:14px;padding:0 18px;height:52px;
+    background:var(--panel);border-bottom:1px solid var(--line);
+    position:sticky;top:0;z-index:20;
+  }
+  header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.3px}
+  header .sub{color:var(--dim);font-size:12px}
+  .spacer{flex:1}
+  .engine{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+    padding:5px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px}
+  .dot{width:8px;height:8px;border-radius:99px;background:var(--dim);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px rgba(53,200,138,.7)}
+  .dot.off{background:var(--err)}
+
+  main{display:grid;grid-template-columns:392px minmax(0,1fr);gap:16px;
+    padding:16px;align-items:start;max-width:1720px;margin:0 auto}
+  @media(max-width:1100px){main{grid-template-columns:1fr}}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+  .card>.hd{display:flex;align-items:center;gap:8px;padding:11px 14px;
+    border-bottom:1px solid var(--line);font-weight:600;font-size:12.5px}
+  .card>.hd .n{color:var(--dim);font-weight:400}
+  .card>.bd{padding:14px}
+
+  /* ---------- 上传 ---------- */
+  .drop{
+    border:1.5px dashed var(--line);border-radius:var(--r);padding:26px 16px;text-align:center;
+    cursor:pointer;transition:.15s;background:var(--panel2);
+  }
+  .drop:hover,.drop.over{border-color:var(--ac);background:#182034}
+  .drop .big{font-size:13.5px;margin-bottom:4px}
+  .drop .sm{font-size:11.5px;color:var(--dim)}
+  .thumb{display:flex;gap:12px;align-items:flex-start}
+  .thumb img{width:88px;height:88px;object-fit:cover;border-radius:8px;
+    border:1px solid var(--line);background:#0b0d12;flex:none}
+  .thumb .meta{font-size:12px;color:var(--muted);min-width:0}
+  .thumb .meta b{color:var(--tx);font-weight:600;display:block;font-size:12.5px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thumb .meta .kv{margin-top:3px}
+
+  /* ---------- 表单 ---------- */
+  .field{margin-bottom:13px}
+  .field:last-child{margin-bottom:0}
+  .lab{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .lab .hint{color:var(--dim);font-size:11px;margin-left:auto;text-align:right}
+  select,input[type=number],input[type=text]{
+    width:100%;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;color:var(--tx);outline:none;
+  }
+  select:focus,input:focus{border-color:var(--ac)}
+  .row{display:flex;gap:10px}
+  .row>*{flex:1;min-width:0}
+
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{
+    display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:99px;
+    background:var(--panel2);border:1px solid var(--line);font-size:12px;
+    cursor:pointer;user-select:none;transition:.12s;
+  }
+  .chip:hover{border-color:#3a4358}
+  .chip.on{background:#1b2a4d;border-color:var(--ac);color:#cfe0ff}
+  .chip .tag{font-size:10.5px;color:var(--dim);padding:0 4px;border-radius:4px;background:#0e1118}
+  .chip.on .tag{color:#9fb6e6;background:#132241}
+
+  .note{font-size:11.5px;color:var(--warn);background:rgba(240,169,59,.09);
+    border:1px solid rgba(240,169,59,.25);border-radius:8px;padding:8px 10px;margin-top:10px}
+  .note.info{color:#9db3db;background:rgba(91,140,255,.08);border-color:rgba(91,140,255,.22)}
+
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+    padding:11px;border-radius:9px;background:var(--ac);color:#fff;font-weight:600;
+    font-size:13px;transition:.15s}
+  .btn:hover{filter:brightness(1.1)}
+  .btn:disabled{background:#2a3042;color:#5d6679;cursor:not-allowed}
+  .btn.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--tx);font-weight:500}
+  .btn.ghost:hover{border-color:#3a4358}
+
+  /* ---------- 任务 ---------- */
+  .joblist{max-height:290px;overflow:auto}
+  .job{display:flex;gap:10px;align-items:center;padding:9px 12px;cursor:pointer;
+    border-bottom:1px solid rgba(39,44,58,.55);font-size:12px}
+  .job:last-child{border-bottom:0}
+  .job:hover{background:var(--panel2)}
+  .job.sel{background:#1a2236;box-shadow:inset 2px 0 0 var(--ac)}
+  .job img{width:38px;height:38px;object-fit:cover;border-radius:6px;background:#0b0d12;flex:none}
+  .job .t{min-width:0;flex:1}
+  .job .t b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .job .t span{color:var(--dim);font-size:11px}
+  .pill{font-size:10.5px;padding:2px 8px;border-radius:99px;flex:none;border:1px solid transparent}
+  .pill.queued{color:var(--muted);background:#20242f}
+  .pill.running{color:#cfe0ff;background:#1b2a4d}
+  .pill.done{color:var(--ok);background:rgba(53,200,138,.12);border-color:rgba(53,200,138,.3)}
+  .pill.failed{color:var(--err);background:rgba(255,92,92,.12);border-color:rgba(255,92,92,.3)}
+  .pill.cancelled{color:var(--warn);background:rgba(240,169,59,.12)}
+
+  .empty{padding:34px 20px;text-align:center;color:var(--dim);font-size:12.5px}
+
+  /* ---------- 进度 ---------- */
+  .bar{height:6px;background:#20242f;border-radius:99px;overflow:hidden;margin-top:9px}
+  .bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3f6fd8,#5b8cff);
+    border-radius:99px;transition:width .35s ease}
+  .bar.done>i{background:var(--ok)}
+  .bar.failed>i{background:var(--err)}
+
+  /* ---------- 结果 ---------- */
+  .stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(122px,1fr));gap:10px}
+  .stat div{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .stat span{display:block;color:var(--dim);font-size:11px;margin-bottom:2px}
+  .stat b{font-weight:600;font-size:12.5px}
+
+  .outs{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+  .out{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;
+    min-width:210px;flex:1}
+  .out .top{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+  .out .top b{font-size:12.5px}
+  .out .top .badge{font-size:10.5px;color:var(--dim);background:#0e1118;padding:1px 6px;border-radius:5px}
+  .out .dim{color:var(--muted);font-size:11.5px;font-family:ui-monospace,Consolas,monospace}
+  .out .warn{color:var(--warn);font-size:11px;margin-top:5px}
+  .out .dl{display:flex;gap:8px;margin-top:9px}
+  .out .dl a{font-size:11.5px;padding:5px 10px;border-radius:7px;background:#232a3a;color:#cfe0ff}
+  .out .dl a:hover{background:#2c3550;text-decoration:none}
+
+  /* ---------- 对比视图 ---------- */
+  .cmpwrap{margin-top:12px}
+  .cmpbar{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+  .cmpbar button{padding:4px 10px;border-radius:7px;background:var(--panel2);
+    border:1px solid var(--line);font-size:11.5px}
+  .cmpbar button:hover{border-color:var(--ac)}
+  #viewport{position:relative;overflow:hidden;height:450px;border-radius:9px;
+    border:1px solid var(--line);background:#0a0c11 repeat;
+    background-image:linear-gradient(45deg,#12151c 25%,transparent 25%),
+      linear-gradient(-45deg,#12151c 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#12151c 75%),
+      linear-gradient(-45deg,transparent 75%,#12151c 75%);
+    background-size:22px 22px;background-position:0 0,0 11px,11px -11px,-11px 0;
+    cursor:grab;touch-action:none}
+  #viewport.drag{cursor:grabbing}
+  .lyr{position:absolute;left:0;top:0;max-width:none;user-select:none;-webkit-user-drag:none;
+    image-rendering:auto;pointer-events:none}
+  #handle{position:absolute;top:0;bottom:0;width:2px;background:var(--ac);left:50%;
+    box-shadow:0 0 10px rgba(91,140,255,.85);cursor:ew-resize;z-index:5}
+  #handle::after{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:26px;height:26px;border-radius:99px;background:var(--ac);
+    border:2px solid #0f1115}
+  .lbl{position:absolute;top:9px;padding:3px 9px;border-radius:6px;font-size:11px;
+    background:rgba(10,12,17,.82);border:1px solid var(--line);z-index:4;pointer-events:none}
+  .lbl.l{left:9px}.lbl.r{right:9px}
+  .legend{position:absolute;bottom:9px;left:9px;font-size:11px;color:var(--muted);
+    background:rgba(10,12,17,.82);border:1px solid var(--line);border-radius:6px;
+    padding:3px 9px;z-index:4;pointer-events:none;font-family:ui-monospace,Consolas,monospace}
+
+  details.log{margin-top:12px;font-size:11.5px;color:var(--muted)}
+  details.log pre{max-height:190px;overflow:auto;background:#0b0d12;border:1px solid var(--line);
+    border-radius:8px;padding:10px;font-size:11px;line-height:1.5;
+    font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  summary{cursor:pointer;color:var(--dim)}
+  .hide{display:none !important}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99;
+    background:#222838;border:1px solid var(--line);border-radius:9px;padding:10px 16px;
+    font-size:12.5px;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:80vw}
+  .toast.err{border-color:rgba(255,92,92,.5);color:#ffd4d4}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>图片超分操作台</h1>
+  <span class="sub">Real-ESRGAN · ncnn-vulkan</span>
+  <div class="spacer"></div>
+  <div class="engine"><i class="dot" id="dot"></i><span id="engtxt">检测中…</span></div>
+</header>
+
+<main>
+  <!-- 左栏 -->
+  <div>
+    <div class="card">
+      <div class="hd">1 · 选择图片</div>
+      <div class="bd">
+        <div id="drop" class="drop">
+          <div class="big">拖拽图片到这里</div>
+          <div class="sm">或点击选择文件 · 也支持 Ctrl+V 粘贴 · png / jpg / webp / bmp / tiff</div>
+        </div>
+        <input type="file" id="file" accept="image/*" class="hide">
+        <div id="thumb" class="thumb hide">
+          <img id="thumbimg" alt="">
+          <div class="meta">
+            <b id="thumbname"></b>
+            <div class="kv" id="thumbsize"></div>
+            <div class="kv" id="thumbdim"></div>
+            <div style="margin-top:7px"><button class="btn ghost" style="padding:5px 10px;width:auto" id="clearbtn">换一张</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="hd">2 · 参数</div>
+      <div class="bd">
+        <div class="field">
+          <div class="lab"><span>模型</span><span class="hint" id="modelnote"></span></div>
+          <select id="model"></select>
+        </div>
+
+        <div class="field">
+          <div class="lab"><span>超分倍率</span><span class="hint" id="scalehint">决定母版大小</span></div>
+          <select id="scale"></select>
+        </div>
+
+        <div class="field">
+          <div class="lab"><span>输出档位（可多选）</span><span class="hint">从同一母版派生，各档观感一致</span></div>
+          <div class="chips" id="targets"></div>
+        </div>
+
+        <div class="field" style="margin-top:12px">
+          <details>
+            <summary>高级选项</summary>
+            <div style="margin-top:10px">
+              <div class="row">
+                <div>
+                  <div class="lab"><span>输出格式</span></div>
+                  <select id="format">
+                    <option value="png">PNG（无损）</option>
+                    <option value="jpg">JPG</option>
+                    <option value="webp">WEBP</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="lab"><span>画质</span></div>
+                  <input type="number" id="quality" value="95" min="50" max="100">
+                </div>
+              </div>
+              <div class="row" style="margin-top:10px">
+                <div>
+                  <div class="lab"><span>分块 tile</span></div>
+                  <select id="tile">
+                    <option value="0">自动</option>
+                    <option value="128">128（省显存）</option>
+                    <option value="256">256</option>
+                    <option value="512">512</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="lab"><span>GPU</span></div>
+                  <input type="number" id="gpu" value="0" min="0">
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div id="warnbox" class="note hide"></div>
+        <button class="btn" id="gobtn" style="margin-top:13px" disabled>开始超分</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="hd">历史任务 <span class="n" id="jobcount"></span></div>
+      <div class="joblist" id="joblist">
+        <div class="empty">还没有任务</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右栏 -->
+  <div class="card">
+    <div class="hd">结果 <span class="n" id="resulttitle"></span>
+      <span style="flex:1"></span>
+      <button class="btn ghost hide" id="delbtn"
+        style="width:auto;padding:4px 11px;font-size:11.5px">删除任务</button>
+    </div>
+    <div class="bd" id="result">
+      <div class="empty">选一张图，点「开始超分」。<br><br>
+        产出会保存在 <code style="color:#9db3db">web/jobs/&lt;任务号&gt;/</code>，刷新或重启服务都不会丢。</div>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ============================================================ 状态 */
+const API = "";
+const S = {
+  cfg: null,
+  file: null,        // {name, dataUrl, w, h, bytes}
+  targets: [],       // [{kind} | {kind,value}]
+  jobs: [],          // 列表
+  cur: null,         // 当前选中任务（详情）
+  timer: null,
+  t0: 0,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const MB = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : (b / 1024).toFixed(0) + " KB";
+const dur = (s) => s == null ? "—" : (s < 60 ? s.toFixed(1) + "s"
+  : Math.floor(s / 60) + "m" + String(Math.round(s % 60)).padStart(2, "0") + "s");
+
+function toast(msg, isErr) {
+  const d = document.createElement("div");
+  d.className = "toast" + (isErr ? " err" : "");
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+
+/* ============================================================ 初始化 */
+async function boot() {
+  try {
+    S.cfg = await (await fetch(API + "/api/config")).json();
+  } catch (e) {
+    $("engtxt").textContent = "服务未响应";
+    $("dot").className = "dot off";
+    return;
+  }
+  const t = S.cfg.tool;
+  $("dot").className = "dot " + (t.ok ? "on" : "off");
+  $("engtxt").textContent = t.ok ? `引擎就绪 · ${t.models.length} 个模型` : "引擎不可用";
+  $("engtxt").title = t.ok ? t.exe : (t.hint || "");
+
+  // 模型
+  $("model").innerHTML = S.cfg.models.map((m) =>
+    `<option value="${m.id}" ${m.available ? "" : "disabled"}>${esc(m.label)}${m.available ? "" : "（未安装）"}</option>`
+  ).join("");
+  const firstOk = S.cfg.models.find((m) => m.id === S.cfg.default_model && m.available)
+    || S.cfg.models.find((m) => m.available);
+  if (firstOk) $("model").value = firstOk.id;
+  $("model").onchange = onModelChange;
+  $("scale").onchange = refreshWarn;
+  onModelChange();                 // 必须主动跑一次，否则倍率下拉是空的
+
+  // 档位
+  buildTargets();
+  await loadJobs();
+  startPoll();
+
+  const want = new URLSearchParams(location.search).get("job");
+  if (want && S.jobs.some((j) => j.id === want)) selectJob(want);
+}
+
+const PRESETS = [
+  { key: "scale", label: "原始 × 倍率", kind: { kind: "scale" } },
+  { key: "2048", label: "2K", sub: "长边 2048", kind: { kind: "long", value: 2048 } },
+  { key: "3840", label: "4K", sub: "长边 3840", kind: { kind: "long", value: 3840 } },
+  { key: "1920", label: "1080p", sub: "长边 1920", kind: { kind: "long", value: 1920 } },
+  { key: "2560", label: "1440p", sub: "长边 2560", kind: { kind: "long", value: 2560 } },
+];
+
+function buildTargets() {
+  const box = $("targets");
+  box.innerHTML = PRESETS.map((p) =>
+    `<div class="chip" data-k="${p.key}">${esc(p.label)}${p.sub ? `<span class="tag">${esc(p.sub)}</span>` : ""}</div>`
+  ).join("") + `<div class="chip" id="customchip">自定义<span class="tag" id="customval">长边…</span></div>`;
+
+  S.targets = [{ kind: "scale" }, { kind: "long", value: 2048 }];
+  box.querySelectorAll(".chip").forEach((el) => {
+    el.onclick = () => {
+      if (el.id === "customchip") return customEdge();
+      const k = el.dataset.k;
+      const p = PRESETS.find((x) => x.key === k);
+      const i = S.targets.findIndex((t) => JSON.stringify(t) === JSON.stringify(p.kind));
+      if (i >= 0) S.targets.splice(i, 1); else S.targets.push(p.kind);
+      paintTargets(); refreshWarn();
+    };
+  });
+  paintTargets();
+}
+
+function customEdge() {
+  const v = prompt("自定义长边像素（例如 2880）", "2880");
+  if (!v) return;
+  const n = parseInt(v, 10);
+  if (!(n >= 64 && n <= 16384)) { toast("长边要在 64 ~ 16384 之间", true); return; }
+  if (!S.targets.some((t) => t.kind === "long" && t.value === n)) S.targets.push({ kind: "long", value: n });
+  paintTargets(); refreshWarn();
+}
+
+function paintTargets() {
+  const box = $("targets");
+  box.querySelectorAll(".chip").forEach((el) => {
+    if (el.id === "customchip") return;
+    const p = PRESETS.find((x) => x.key === el.dataset.k);
+    el.classList.toggle("on", S.targets.some((t) => JSON.stringify(t) === JSON.stringify(p.kind)));
+  });
+  const cust = S.targets.filter((t) => t.kind === "long" && !PRESETS.some(
+    (p) => p.kind.value === t.value));
+  const cc = $("customchip");
+  cc.classList.toggle("on", cust.length > 0);
+  $("customval").textContent = cust.length ? cust.map((t) => t.value).join(", ") : "长边…";
+}
+
+function onModelChange() {
+  const m = S.cfg.models.find((x) => x.id === $("model").value);
+  if (!m) return;
+  $("modelnote").textContent = m.note;
+  // 只列「权重文件确实在」的倍率：模型支持 ≠ 对应权重的 .param 已落盘
+  const sc = (m.available_scales && m.available_scales.length) ? m.available_scales : m.scales;
+  $("scale").innerHTML = sc.map((s) =>
+    `<option value="${s}">×${s}${s === 4 ? "（质量最好）" : ""}</option>`).join("");
+  $("scale").value = String(sc[sc.length - 1]);
+  $("scalehint").textContent = sc.length > 1 ? "决定母版大小" : "该模型固定 ×4";
+  refreshWarn();
+}
+
+function refreshWarn() {
+  const box = $("warnbox");
+  const msgs = [];
+  if (S.file) {
+    const scale = parseInt($("scale").value, 10) || 4;
+    const long = Math.max(S.file.w, S.file.h);
+    const master = long * scale;
+    if (master > 12000) msgs.push(`母版将达 ${master}px 级，耗时与显存占用明显上升（可把 tile 调小）。`);
+    for (const t of S.targets) {
+      if (t.kind === "long" && t.value <= long) {
+        msgs.push(`档位 ${t.value}px 不大于源图长边 ${long}px —— 这一档其实是缩小，没有超分收益。`);
+      }
+      if (t.kind === "long" && t.value > master) {
+        msgs.push(`档位 ${t.value}px 超过母版 ${master}px —— 该档将由母版上采样补齐，不是模型原生细节。`);
+      }
+    }
+  }
+  box.classList.toggle("hide", msgs.length === 0);
+  box.innerHTML = [...new Set(msgs)].map((m) => "· " + esc(m)).join("<br>");
+}
+
+/* ============================================================ 上传 */
+function bindDrop() {
+  const dz = $("drop"), fi = $("file");
+  dz.onclick = () => fi.click();
+  fi.onchange = () => fi.files[0] && useFile(fi.files[0]);
+  ["dragenter", "dragover"].forEach((e) => dz.addEventListener(e, (ev) => {
+    ev.preventDefault(); dz.classList.add("over");
+  }));
+  ["dragleave", "drop"].forEach((e) => dz.addEventListener(e, (ev) => {
+    ev.preventDefault(); dz.classList.remove("over");
+  }));
+  dz.addEventListener("drop", (ev) => {
+    const f = [...(ev.dataTransfer.files || [])].find((x) => x.type.startsWith("image/"));
+    if (f) useFile(f); else toast("拖进来的是图片吗？", true);
+  });
+  document.addEventListener("paste", (ev) => {
+    const it = [...(ev.clipboardData?.items || [])].find((x) => x.type.startsWith("image/"));
+    if (it) useFile(it.getAsFile());
+  });
+  $("clearbtn").onclick = () => { S.file = null; paintFile(); };
+}
+
+function useFile(f) {
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      S.file = { name: f.name, dataUrl: r.result, w: img.naturalWidth, h: img.naturalHeight, bytes: f.size };
+      paintFile(); refreshWarn();
+    };
+    img.src = r.result;
+  };
+  r.readAsDataURL(f);
+}
+
+function paintFile() {
+  const has = !!S.file;
+  $("drop").classList.toggle("hide", has);
+  $("thumb").classList.toggle("hide", !has);
+  $("gobtn").disabled = !has || !(S.cfg && S.cfg.tool.ok);
+  if (!has) return;
+  $("thumbimg").src = S.file.dataUrl;
+  $("thumbname").textContent = S.file.name;
+  $("thumbsize").textContent = MB(S.file.bytes) + "　→ 超分中会重新编码";
+  $("thumbdim").textContent = `源图 ${S.file.w} × ${S.file.h}`;
+}
+
+/* ============================================================ 提交 */
+async function go() {
+  if (!S.file) return;
+  const btn = $("gobtn");
+  btn.disabled = true; btn.textContent = "提交中…";
+  try {
+    const r = await fetch(API + "/api/jobs", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: S.file.name, data: S.file.dataUrl,
+        model: $("model").value, scale: parseInt($("scale").value, 10),
+        targets: S.targets, format: $("format").value,
+        quality: parseInt($("quality").value, 10),
+        tile: parseInt($("tile").value, 10), gpu: parseInt($("gpu").value, 10),
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    await loadJobs();
+    selectJob(j.job_id);
+    startPoll();
+  } catch (e) {
+    toast("提交失败：" + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = "开始超分";
+  }
+}
+
+/* ============================================================ 轮询 */
+function startPoll() {
+  if (S.timer) return;
+  S.timer = setInterval(tick, 1200);
+}
+function stopPoll() {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+}
+let busy = false, fails = 0;
+async function tick() {
+  if (busy) return;
+  busy = true;
+  try {
+    await loadJobs();
+    fails = 0;
+    if (S.cur) {
+      const j = S.jobs.find((x) => x.id === S.cur.id);
+      if (j) {
+        if (j.status === "done" && S.cur.status !== "done") {
+          const d = await (await fetch(API + "/api/jobs/" + j.id)).json();
+          S.cur = d; paintResult();
+        } else {
+          S.cur = { ...S.cur, status: j.status, stage: j.stage, progress: j.progress, error: j.error, elapsed: j.elapsed };
+          paintProgress();
+        }
+      }
+    }
+    if (!S.jobs.some((j) => j.status === "queued" || j.status === "running")) stopPoll();
+  } catch (e) {
+    // 连不上就退避：否则 setInterval 会一直重试，页签挂着白烧资源
+    if (++fails >= 5) stopPoll();
+  }
+  busy = false;
+}
+
+async function loadJobs() {
+  const r = await (await fetch(API + "/api/jobs")).json();
+  S.jobs = r.jobs || [];
+  paintJobList();
+}
+
+/* ============================================================ 渲染 */
+function paintJobList() {
+  const box = $("joblist");
+  $("jobcount").textContent = S.jobs.length ? `· ${S.jobs.length}` : "";
+  if (!S.jobs.length) { box.innerHTML = `<div class="empty">还没有任务</div>`; return; }
+  box.innerHTML = S.jobs.map((j) => {
+    const thumb = j.outputs && j.outputs[0]
+      ? `<img src="${API}/api/jobs/${j.id}/file/${encodeURIComponent(j.outputs[0].file)}" alt="">`
+      : `<img src="${API}/api/jobs/${j.id}/source" alt="">`;
+    const t = new Date((j.created || 0) * 1000);
+    const hh = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0");
+    const sub = j.status === "done"
+      ? `${j.outputs.map((o) => o.label).join(" / ")} · ${dur(j.elapsed)}`
+      : (j.message || j.stage || "");
+    return `<div class="job ${S.cur && S.cur.id === j.id ? "sel" : ""}" data-id="${j.id}">
+      ${thumb}
+      <div class="t"><b>${esc(j.src.name)}</b><span>${hh}　${esc(sub)}</span></div>
+      <span class="pill ${j.status}">${{ queued: "排队", running: "运行中", done: "完成", failed: "失败", cancelled: "取消" }[j.status] || j.status}</span>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".job").forEach((el) => {
+    el.onclick = () => selectJob(el.dataset.id);
+  });
+}
+
+async function selectJob(id) {
+  let d;
+  try {
+    d = await (await fetch(API + "/api/jobs/" + id)).json();
+  } catch (e) { return; }
+  if (d.error) { toast("任务不存在：" + id, true); return; }
+  S.cur = d;
+  history.replaceState(null, "", "?job=" + id);      // 深链：刷新/收藏都能回到这个任务
+  paintJobList(); paintResult();
+  if (d.status === "queued" || d.status === "running") startPoll();
+}
+
+function paintProgress() {
+  const j = S.cur;
+  if (!j) return;
+  const bar = $("pbar"), st = $("pstage");
+  if (bar) {
+    bar.className = "bar " + (j.status === "done" ? "done" : j.status === "failed" ? "failed" : "");
+    bar.firstElementChild.style.width = (j.progress || 0) + "%";
+  }
+  if (st) st.textContent = `${j.stage || ""} ${j.progress ? j.progress.toFixed(0) + "%" : ""}`;
+  const el = $("pelapsed");
+  if (el && j.status === "running" && j.t_start) el.textContent = dur(Date.now() / 1000 - j.t_start);
+}
+
+function paintResult() {
+  const j = S.cur, box = $("result");
+  $("resulttitle").textContent = j ? `· ${j.src.name}` : "";
+  const del = $("delbtn");
+  del.classList.toggle("hide", !j);
+  if (j) del.onclick = async () => {
+    if (!confirm("删除这个任务及其产物文件？此操作不可恢复。")) return;
+    await fetch(API + "/api/jobs/" + j.id, { method: "DELETE" });
+    cmp.detach(); S.cur = null; await loadJobs(); paintResult();
+  };
+  if (!j) {
+    box.innerHTML = `<div class="empty">选一张图，点「开始超分」。<br><br>
+      产出会保存在 <code style="color:#9db3db">web/jobs/&lt;任务号&gt;/</code>，刷新或重启服务都不会丢。</div>`;
+    return;
+  }
+
+  const p = j.params || {};
+  const running = j.status === "queued" || j.status === "running";
+  const head = `
+    <div class="stat">
+      <div><span>源图</span><b>${j.src.w} × ${j.src.h}</b></div>
+      <div><span>模型</span><b>${esc((p.model || "").replace("realesrgan-", "").replace("realesr-", ""))}</b></div>
+      <div><span>倍率</span><b>×${p.scale}</b></div>
+      <div><span>耗时</span><b id="pelapsed">${j.elapsed != null ? dur(j.elapsed) : (running ? "…" : "—")}</b></div>
+    </div>
+    ${j.warn ? `<div class="note" style="margin-top:10px">${esc(j.warn)}</div>` : ""}`;
+
+  if (running) {
+    box.innerHTML = head + `
+      <div style="margin-top:14px;display:flex;align-items:center;gap:10px">
+        <div style="flex:1">
+          <div style="font-size:12.5px" id="pstage"></div>
+          <div class="bar" id="pbar"><i></i></div>
+        </div>
+        <button class="btn ghost" style="width:auto;padding:7px 14px" onclick="cancelJob('${j.id}')">取消</button>
+      </div>
+      <div class="note info" style="margin-top:12px">超分进度是引擎实时上报的，长时间不动通常是正在处理当前分块（大图 + 小 tile 时更久）。</div>
+      ${logHtml(j)}`;
+    paintProgress();
+    cmp.detach();
+    return;
+  }
+
+  if (j.status === "failed" || j.status === "cancelled") {
+    box.innerHTML = head + `
+      <div class="note" style="margin-top:12px">${j.status === "cancelled" ? "已取消。" : "失败：" + esc(j.error || "未知错误")}</div>
+      ${logHtml(j)}`;
+    cmp.detach();
+    return;
+  }
+
+  const outs = j.outputs || [];
+  box.innerHTML = head + `
+    <div class="outs">
+      ${outs.map((o) => `
+        <div class="out">
+          <div class="top"><b>${esc(o.label)}</b>
+            <span class="badge">${o.from_master ? "母版直出" : "由母版派生"}</span></div>
+          <div class="dim">${o.w} × ${o.h}　·　${MB(o.bytes)}</div>
+          ${o.note ? `<div class="warn">${esc(o.note)}</div>` : ""}
+          <div class="dl">
+            <a href="${API}/api/jobs/${j.id}/file/${encodeURIComponent(o.file)}?download=1">下载</a>
+            <a href="${API}/api/jobs/${j.id}/file/${encodeURIComponent(o.file)}" target="_blank">新窗口看原图</a>
+          </div>
+        </div>`).join("")}
+    </div>
+    ${outs.length > 1 ? `<div class="note info" style="margin-top:10px">全部档位由同一次超分派生，观感一致；「母版直出」那一档没有再编码。</div>` : ""}
+
+    <div class="cmpwrap">
+      <div class="cmpbar">
+        <b style="color:var(--tx);font-weight:600">画质对比</b>
+        <span>拖动竖线比较 · 滚轮缩放 · 拖动平移</span>
+        <span style="color:var(--warn)">缩小状态下两侧看不出差别是正常的 —— 放大到 100% 才见真章</span>
+        <span class="spacer" style="flex:1"></span>
+        <select id="cmpwhich" style="width:auto"></select>
+        <button onclick="cmp.fit()">适应窗口</button>
+        <button onclick="cmp.oneToOne()">1:1</button>
+        <span id="cmpzoom" style="font-family:ui-monospace,Consolas,monospace;color:var(--dim)"></span>
+      </div>
+      <div id="viewport">
+        <img class="lyr" id="lyrSrc" alt="">
+        <img class="lyr" id="lyrRes" alt="">
+        <div class="lbl l">原图 · 插值放大</div>
+        <div class="lbl r" id="lblres">超分</div>
+        <div class="legend" id="legend"></div>
+        <div id="handle"></div>
+      </div>
+    </div>
+    ${logHtml(j)}`;
+
+  $("cmpwhich").innerHTML = outs.map((o, i) =>
+    `<option value="${encodeURIComponent(o.file)}">${esc(o.label)} · ${o.w}×${o.h}</option>`).join("");
+  $("cmpwhich").onchange = () => cmp.attach(j, $("cmpwhich").value);
+  cmp.attach(j, encodeURIComponent(outs[0].file));
+}
+
+function logHtml(j) {
+  const lines = (j.log || []);
+  if (!lines.length) return "";
+  return `<details class="log"><summary>运行日志（${lines.length} 行）</summary>
+    <pre>${esc(lines.join("\n"))}</pre></details>`;
+}
+
+async function cancelJob(id) {
+  await fetch(API + "/api/jobs/" + id + "/cancel", { method: "POST" });
+  await loadJobs();
+  if (S.cur && S.cur.id === id) selectJob(id);
+}
+
+/* ============================================================ 对比视图 */
+const cmp = {
+  _ready: false, j: null, which: null,
+  k: 1, px: 0, py: 0, split: 0.5,
+  RW: 0, RH: 0, out: null,
+  dragging: false, mode: "", sx: 0, sy: 0, spx: 0, spy: 0,
+
+  detach() { this._ready = false; this.j = null; },
+  attach(job, which) {
+    if (!job || !job.outputs || !job.outputs.length) { this.detach(); return; }
+    const o = job.outputs.find((x) => encodeURIComponent(x.file) === which) || job.outputs[0];
+    this.j = job; this.which = o.file; this.out = o;
+    const vp = $("viewport");
+    if (!vp) { this._ready = false; return; }
+    const a = $("lyrSrc"), b = $("lyrRes");
+    a.src = `${API}/api/jobs/${job.id}/source`;
+    b.src = `${API}/api/jobs/${job.id}/file/${encodeURIComponent(o.file)}`;
+    this.RW = o.w; this.RH = o.h;
+    $("lblres").textContent = `超分 ${o.w}×${o.h}`;
+    Promise.all([dec(a), dec(b)]).then(() => {
+      this._ready = true;
+      this.bindViewport();      // #viewport 是刚生成的，得在这里绑
+      this.fit();
+    }).catch(() => { this._ready = false; });
+  },
+
+  viewport() { return $("viewport"); },
+
+  fit() {
+    const vp = this.viewport(); if (!vp || !this._ready) return;
+    const vw = vp.clientWidth, vh = vp.clientHeight;
+    this.k = Math.min(vw / this.RW, vh / this.RH) * 0.96;
+    this.px = (this.RW - vw / this.k) / 2;
+    this.py = (this.RH - vh / this.k) / 2;
+    this.split = 0.5; this.render();
+  },
+
+  oneToOne() {
+    const vp = this.viewport(); if (!vp || !this._ready) return;
+    const vw = vp.clientWidth, vh = vp.clientHeight;
+    this.k = 1;
+    this.px = (this.RW - vw) / 2; this.py = (this.RH - vh) / 2;
+    this.render();
+  },
+
+  zoomAt(mx, my, factor) {
+    const vp = this.viewport(); if (!vp) return;
+    const k2 = Math.max(0.02, Math.min(12, this.k * factor));
+    const ux = this.px + mx / this.k, uy = this.py + my / this.k;
+    this.k = k2;
+    this.px = ux - mx / k2; this.py = uy - my / k2;
+    this.render();
+  },
+
+  /* 两层必须「同尺寸 + 同位移」，否则分割线两侧不是同一块画面，对比就没意义。
+     做法：都以「成图像素」为坐标系（px/py、k 的单位都是成图像素），
+     原图层被拉伸到成图的显示尺寸 —— 也就是浏览器插值放大的效果，
+     正好就是要拿来对照的 baseline（原图插值 vs 模型重建）。 */
+  render() {
+    const vp = this.viewport(); if (!vp || !this._ready) return;
+    const vw = vp.clientWidth;
+    const k = this.k;
+    const GW = this.RW * k, GH = this.RH * k;
+    const tx = -this.px * k, ty = -this.py * k;
+    const cut = this.split * vw;
+
+    const a = $("lyrSrc"), b = $("lyrRes");
+    for (const el of [a, b]) {
+      el.style.width = GW + "px";
+      el.style.height = GH + "px";
+      el.style.transform = `translate(${tx}px,${ty}px)`;
+    }
+    a.style.clipPath = `inset(0 ${clamp(GW - (cut - tx), 0, GW)}px 0 0)`;
+    b.style.clipPath = `inset(0 0 0 ${clamp(cut - tx, 0, GW)}px)`;
+
+    $("handle").style.left = cut + "px";
+    $("cmpzoom").textContent = (k * 100).toFixed(0) + "%";
+    $("legend").textContent =
+      `成图坐标 ${Math.round(this.px)},${Math.round(this.py)} · ` +
+      `${this.RW}×${this.RH} · 显示 ${(k * 100).toFixed(0)}%`;
+  },
+
+  /** 只绑全局 resize。注意：#viewport 是按需创建的，页面加载时并不存在 ——
+   *  早期版本在这里直接取它并 addEventListener，空态首屏就会抛 TypeError
+   *  把整个脚本打断（表现为「引擎检测中…」、下拉全空、点什么都无效）。 */
+  bind() {
+    window.addEventListener("resize", () => { if (this._ready) this.render(); });
+  },
+
+  /** 结果区每次 innerHTML 重建后，为新的 viewport 绑一次交互。 */
+  bindViewport() {
+    const vp = this.viewport();
+    if (!vp || vp._bound) return;
+    vp._bound = true;
+    const hd = $("handle");
+    const pos = (e) => {
+      const rc = vp.getBoundingClientRect();
+      return [e.clientX - rc.left, e.clientY - rc.top, rc.width];
+    };
+    vp.addEventListener("wheel", (e) => {
+      if (!this._ready) return;
+      e.preventDefault();
+      const [mx, my] = pos(e);
+      this.zoomAt(mx, my, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    }, { passive: false });
+
+    const down = (mode) => (e) => {
+      if (!this._ready) return;
+      e.preventDefault();
+      const [mx, my, w] = pos(e);
+      this.dragging = true; this.mode = mode;
+      this.sx = mx; this.sy = my; this.spx = this.px; this.spy = this.py;
+      if (mode === "split") { this.split = clamp(mx / w, 0, 1); this.render(); }
+      vp.classList.add("drag");
+      vp.setPointerCapture?.(e.pointerId);
+    };
+    vp.addEventListener("pointerdown", down("pan"));
+    if (hd) {
+      hd.addEventListener("pointerdown", (e) => { e.stopPropagation(); down("split")(e); });
+      hd.addEventListener("click", (e) => e.stopPropagation());
+    }
+    vp.addEventListener("pointermove", (e) => {
+      if (!this.dragging || !this._ready) return;
+      const [mx, my, w] = pos(e);
+      if (this.mode === "pan") {
+        this.px = this.spx - (mx - this.sx) / this.k;
+        this.py = this.spy - (my - this.sy) / this.k;
+      } else {
+        this.split = clamp(mx / w, 0, 1);
+      }
+      this.render();
+    });
+    const up = () => { this.dragging = false; vp.classList.remove("drag"); };
+    vp.addEventListener("pointerup", up);
+    vp.addEventListener("pointercancel", up);
+  },
+};
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function dec(img) {
+  return new Promise((res, rej) => {
+    if (img.complete && img.naturalWidth) return res();
+    img.onload = () => res(); img.onerror = rej;
+  });
+}
+
+/* ============================================================ 启动 */
+// 初始化里任何一步抛错都不该让整页变成「死页面」——显式暴露出来
+window.addEventListener("error", (e) => {
+  try { toast("脚本出错：" + (e.message || e.error), true); } catch (_) { }
+  console.error(e.error || e.message);
+});
+
+$("gobtn").onclick = go;
+try { bindDrop(); } catch (e) { console.error("bindDrop 失败", e); }
+try { cmp.bind(); } catch (e) { console.error("cmp.bind 失败", e); }
+boot();
+</script>
+</body>
+</html>
