@@ -44,10 +44,71 @@
 | `{{negative_prompt}}` | 负向提示词 |
 | `{{width}}` / `{{height}}` | 分辨率（**保持 int 类型**，ComfyUI 不接受字符串） |
 | `{{seed}}` | 随机种子（同样保持 int） |
+| `{{steps}}` | 采样步数（覆盖模板默认值） |
+| `{{cfg}}` | CFG 强度（覆盖模板默认值） |
 
 > 关键实现细节：当某个值**整个字符串**就是 `{{key}}` 时，替换后保留原始类型；
 > 若 `{{key}}` 内嵌在长字符串里，则做文本替换、结果为字符串。
-> 这解决了 ComfyUI 对 `width`/`seed` 必须为数字的硬要求。
+> 这解决了 ComfyUI 对 `width`/`seed`/`steps`/`cfg` 必须为数字的硬要求。
+> 从 `.env` / 项目 extra / HTTP 入参拿到的字符串数字（`"28"`、`"4.0"`）会被自动转成
+> 数字；`None` 视为"未指定"，不会写进工作流。
+
+### 采样参数怎么调（steps / cfg）
+
+模板用 `__meta__.defaults` **自述默认值**，调用方按需覆盖，三级优先级：
+
+```
+单次调用（Skill 入参）  >  项目固化（set_image_provider 的 image_steps / image_cfg）
+                        >  模板 __meta__.defaults
+```
+
+```jsonc
+// 模板里这样写
+"__meta__": { "defaults": { "steps": 20, "cfg": 2.5 } },
+"7": { "class_type": "KSampler",
+       "inputs": { "steps": "{{steps}}", "cfg": "{{cfg}}", ... } }
+```
+
+```jsonc
+// 每次调用临时覆盖
+POST /api/skills/generate_image/invoke
+{ "shot_id": "shot_xxx", "steps": 28, "cfg": 4.0, "seed": 20261006 }
+
+// 或整项目固化
+POST /api/skills/set_image_provider/invoke
+{ "project_id": "proj_xxx", "image_provider": "comfyui",
+  "scene_workflow_name": "qwen_image_scene", "image_steps": 28, "image_cfg": 4.0 }
+```
+
+⚠️ **cfg 不是「画质旋钮」，是「版式旋钮」**。2026-10-06 实测（`_qwen_ab2`，固定
+画风前缀/尺寸/seed/负向词，1280×720，只动 cfg 与 steps）：
+
+| 组 | 平均亮度 | 对比度 σ | 饱和度 |
+|---|---|---|---|
+| cfg 2.5 / 20 步（默认） | 30.5 | 40.6 | 0.539 |
+| cfg 4.0 / 20 步 | 24.5 | **35.2** | 0.626 |
+| cfg 2.5 / 28 步 | **39.5** | **47.8** | 0.497 |
+| cfg 4.0 / 28 步 | 34.2 | 44.1 | 0.537 |
+
+cfg 4.0 在 20 步下**对比度反而最低、脸更暗、高光过曝**——「cfg 高 = 画质好」不成立。
+而且**同一 seed 下改参数会改变整条采样轨迹**，出来的是**另一张图**（构图都会变），
+所以不能拿两张图直接比全局色调，更不能 n=1 判优劣。要选参数请跑**多 seed 多样本**。
+
+### 产物落库留痕（复盘用）
+
+出图完成后，`Asset.parameters` 里会记录**实际提交给 ComfyUI 的值**（不是入参回声）：
+
+| 字段 | 含义 |
+|---|---|
+| `seed` | **真实使用的种子**。不传 seed 时由服务端随机，但一定落库——出了好图可以照抄复现 |
+| `steps` / `cfg` | 实际生效值（含模板默认值兜底的情况） |
+| `sampler_name` / `scheduler` / `denoise` | 从提交的工作流里抄回 |
+| `final_prompt` | **实际送进模型的那段文字**（含项目前缀） |
+| `prefix_injected` | 本次有没有自动前置 `scene_prompt_prefix` |
+
+> 不想让 Studio 自动前置画风前缀（想完全复刻你自己写的提示词）：
+> `set_image_provider` 传 `"inject_scene_prefix": false`。
+> 想确认到底送了什么，查 `Asset.parameters.final_prompt` 即可，不用再猜。
 
 ### 本机实际模型（已核对 ComfyUI `/object_info`）
 

@@ -85,7 +85,7 @@
 
 | 指标 | 数值 |
 |---|---|
-| 后端测试 | **144 用例，11s，全绿**（不需 GPU） |
+| 后端测试 | **169 用例，全绿**（不需 GPU；本轮新增 25 条参数回归） |
 | Skill 数 | 124 |
 | DB 表 | 29 |
 | 真实 TaskType handler | 16 |
@@ -93,3 +93,31 @@
 | ComfyUI 模板 | 5（含 `minimax_h3_i2v`） |
 | 待办标记 TODO/FIXME | **0**（代码里没有遗留标记） |
 | 工程结构 | `backend/app/{core,skills,services,executors,providers,routers,workflows}` 分层清晰 |
+
+---
+
+## 七 修复进展（持续更新）
+
+### 2026-10-06 14:00 —— 出图参数控制权（本次勘察过程中新发现，已修）
+
+勘察后追加排查"Studio 出图与直连 ComfyUI 不一样"，挖出**两条引擎缺陷**并已修复：
+
+| # | 缺陷 | 修法 |
+|---|---|---|
+| 1 | **`steps` / `cfg` 不可配**（写死在模板 JSON） | 模板支持 `{{steps}}`/`{{cfg}}` 占位符 + `__meta__.defaults` 兜底；provider 透传；三级优先级：**单次调用 > 项目 `image_steps`/`image_cfg` > 模板默认** |
+| 2 | **ComfyUI 真实 seed 不落库**（提交用随机值，`parameters` 里没有 seed） | `actual_seed` 算一次全程复用，同时写入 `GenerationResult.seed` 与 `parameters`。图像 + 视频通道都修了 |
+| 3 | 顺带修：`seed=0` 被 `or` 当假值丢掉换成随机种子 | 改用显式 `is not None` 判断 |
+| 4 | 顺带修：提示词被**静默注入**前缀，无从查证 | 新增 `inject_scene_prefix: false` 开关；并把 `final_prompt` / `prefix_injected` 落进 `Asset.parameters` |
+
+**验证**：新增 25 条回归用例（`tests/test_sampler_params.py`），全套 **169 用例全绿**；
+端到端实拍确认——`steps=28 / cfg=4.0` 确实进到提交给 ComfyUI 的工作流、seed 落库为真实值、
+**同参同 seed 两次出图逐字节相同（可复现）**。
+
+> 结论修正：Studio 与直连的差距**不是画质，是控制权**。实测 cfg 4.0 在 20 步下对比度反而
+> 最低（σ35.2 < 默认的 40.6）、脸更暗、高光过曝，「cfg 高 = 画质好」不成立。详见
+> `docs/COMFYUI_QWEN.md` 的采样参数章节。
+
+### 仍待处理
+
+- 本文件一、二、三、四节列出的其余各项：妲己资产入库桥、EP001 三个决策、各项工程债，
+  以及第五节那两条高危静默失败（建议改成启动期断言，别靠人的记性规避）。

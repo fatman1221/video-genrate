@@ -430,7 +430,10 @@ curl http://127.0.0.1:8077/api/skills/list_image_workflows/invoke
 | `sdxl_ipadapter_scene` | SDXL + IPAdapter 备选 |
 
 模板放 `backend/app/workflows/templates/*.json`，占位符：
-`{{prompt}} / {{negative_prompt}} / {{width}} / {{height}} / {{seed}} / {{image}} / {{frames}}`。
+`{{prompt}} / {{negative_prompt}} / {{width}} / {{height}} / {{seed}} / {{steps}} / {{cfg}} / {{image}} / {{frames}}`。
+采样参数（`{{steps}}` / `{{cfg}}`）由模板 `__meta__.defaults` 自述默认值，可被
+单次调用或项目级 `image_steps` / `image_cfg` 覆盖 —— 详见
+[docs/COMFYUI_QWEN.md](docs/COMFYUI_QWEN.md)。
 
 **换成自己的工作流只需替换 json，无需改代码。**
 
@@ -688,7 +691,7 @@ VIDEO_GENERATED → QUALITY_CHECK → FAILED → ANALYZE → REGENERATE → QUAL
 > 详见 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 > **测试**：`cd backend && unset PYTHONPATH && ../.venv/Scripts/python.exe -m pytest`
-> （140 用例，不需要 GPU；`-m gpu` 跑真实出图）。
+> （169 用例，不需要 GPU；`-m gpu` 跑真实出图）。
 
 ---
 
