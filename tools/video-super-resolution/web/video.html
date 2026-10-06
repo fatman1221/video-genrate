@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频超分操作台 · Real-ESRGAN</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161922; --panel2:#1c202b; --line:#272c3a;
+    --tx:#e6e9ef; --muted:#8b93a7; --dim:#5d6679;
+    --ac:#5b8cff; --ok:#35c88a; --warn:#f0a93b; --err:#ff5c5c;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--tx);
+    font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--ac);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+  input,select{font:inherit}
+
+  header{
+    display:flex;align-items:center;gap:14px;padding:0 18px;height:52px;
+    background:var(--panel);border-bottom:1px solid var(--line);
+    position:sticky;top:0;z-index:20;
+  }
+  header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.3px}
+  header .sub{color:var(--dim);font-size:12px}
+  header nav{display:flex;gap:4px;margin-left:6px}
+  header nav a{font-size:12px;padding:4px 10px;border-radius:7px;color:var(--muted)}
+  header nav a:hover{background:var(--panel2);text-decoration:none}
+  header nav a.on{background:#1b2a4d;color:#cfe0ff}
+  .spacer{flex:1}
+  .engine{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+    padding:5px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px}
+  .dot{width:8px;height:8px;border-radius:99px;background:var(--dim);flex:none}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px rgba(53,200,138,.7)}
+  .dot.off{background:var(--err)}
+  .dot.busy{background:var(--warn);box-shadow:0 0 8px rgba(240,169,59,.7)}
+
+  main{display:grid;grid-template-columns:400px minmax(0,1fr);gap:16px;
+    padding:16px;align-items:start;max-width:1760px;margin:0 auto}
+  @media(max-width:1150px){main{grid-template-columns:1fr}}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+  .card>.hd{display:flex;align-items:center;gap:8px;padding:11px 14px;
+    border-bottom:1px solid var(--line);font-weight:600;font-size:12.5px}
+  .card>.hd .n{color:var(--dim);font-weight:400}
+  .card>.bd{padding:14px}
+
+  .drop{
+    border:1.5px dashed var(--line);border-radius:var(--r);padding:26px 16px;text-align:center;
+    cursor:pointer;transition:.15s;background:var(--panel2);
+  }
+  .drop:hover,.drop.over{border-color:var(--ac);background:#182034}
+  .drop .big{font-size:13.5px;margin-bottom:4px}
+  .drop .sm{font-size:11.5px;color:var(--dim)}
+
+  .infobox{font-size:12px;color:var(--muted)}
+  .infobox b{color:var(--tx);font-weight:600;display:block;font-size:12.5px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:4px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11.5px}
+  .kv i{color:var(--dim);font-style:normal}
+  .kv em{color:var(--tx);font-style:normal;font-family:ui-monospace,Consolas,monospace}
+
+  .field{margin-bottom:13px}
+  .field:last-child{margin-bottom:0}
+  .lab{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .lab .hint{color:var(--dim);font-size:11px;margin-left:auto;text-align:right}
+  select,input[type=number],input[type=text]{
+    width:100%;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;color:var(--tx);outline:none;
+  }
+  select:focus,input:focus{border-color:var(--ac)}
+  .row{display:flex;gap:10px}
+  .row>*{flex:1;min-width:0}
+  label.ck{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+    cursor:pointer;padding:4px 0}
+  label.ck input{width:auto}
+
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{
+    display:flex;align-items:center;gap:6px;padding:6px 11px;border-radius:99px;
+    background:var(--panel2);border:1px solid var(--line);font-size:12px;
+    cursor:pointer;user-select:none;transition:.12s;
+  }
+  .chip:hover{border-color:#3a4358}
+  .chip.on{background:#1b2a4d;border-color:var(--ac);color:#cfe0ff}
+
+  .note{font-size:11.5px;color:var(--warn);background:rgba(240,169,59,.09);
+    border:1px solid rgba(240,169,59,.25);border-radius:8px;padding:8px 10px;margin-top:10px}
+  .note.info{color:#9db3db;background:rgba(91,140,255,.08);border-color:rgba(91,140,255,.22)}
+  .note.err{color:#ffc9c9;background:rgba(255,92,92,.09);border-color:rgba(255,92,92,.28)}
+  .note b{display:block;margin-bottom:3px}
+
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+    padding:11px;border-radius:9px;background:var(--ac);color:#fff;font-weight:600;
+    font-size:13px;transition:.15s}
+  .btn:hover{filter:brightness(1.1)}
+  .btn:disabled{background:#2a3042;color:#5d6679;cursor:not-allowed}
+  .btn.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--tx);font-weight:500}
+  .btn.ghost:hover{border-color:#3a4358}
+  .btn.danger{background:#3a2028;border:1px solid rgba(255,92,92,.4);color:#ffb3b3;font-weight:500}
+  .btn.danger:hover{background:#4a2630}
+  .btnrow{display:flex;gap:9px;margin-top:13px}
+  .btnrow .btn{flex:1}
+
+  .plan{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:11px 12px}
+  .plan .big{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .plan .big b{font-size:16px;font-weight:600;font-family:ui-monospace,Consolas,monospace}
+  .plan .big span{color:var(--dim);font-size:11.5px}
+  .plan .g{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px;margin-top:8px}
+  .plan .g div{background:#0e1118;border:1px solid var(--line);border-radius:7px;padding:7px 9px}
+  .plan .g i{display:block;color:var(--dim);font-size:10.5px;font-style:normal;margin-bottom:2px}
+  .plan .g em{font-style:normal;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+
+  .joblist{max-height:260px;overflow:auto}
+  .job{display:flex;gap:10px;align-items:center;padding:9px 12px;cursor:pointer;
+    border-bottom:1px solid rgba(39,44,58,.55);font-size:12px}
+  .job:last-child{border-bottom:0}
+  .job:hover{background:var(--panel2)}
+  .job.sel{background:#1a2236;box-shadow:inset 2px 0 0 var(--ac)}
+  .job .ic{width:38px;height:38px;border-radius:6px;background:#0b0d12;flex:none;
+    display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:15px}
+  .job .t{min-width:0;flex:1}
+  .job .t b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .job .t span{color:var(--dim);font-size:11px}
+  .pill{font-size:10.5px;padding:2px 8px;border-radius:99px;flex:none;border:1px solid transparent}
+  .pill.ready{color:var(--muted);background:#20242f}
+  .pill.queued{color:var(--muted);background:#20242f}
+  .pill.running{color:#cfe0ff;background:#1b2a4d}
+  .pill.done{color:var(--ok);background:rgba(53,200,138,.12);border-color:rgba(53,200,138,.3)}
+  .pill.warn{color:var(--warn);background:rgba(240,169,59,.12);border-color:rgba(240,169,59,.3)}
+  .pill.failed{color:var(--err);background:rgba(255,92,92,.12);border-color:rgba(255,92,92,.3)}
+  .pill.cancelled{color:var(--warn);background:rgba(240,169,59,.12)}
+  .empty{padding:34px 20px;text-align:center;color:var(--dim);font-size:12.5px}
+
+  .progwrap{margin:2px 0 0}
+  .proghead{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
+  .proghead b{font-size:22px;font-weight:600;font-family:ui-monospace,Consolas,monospace}
+  .proghead .st{color:var(--ac);font-size:12.5px;font-weight:600}
+  .proghead .sp{flex:1}
+  .proghead .eta{color:var(--muted);font-size:11.5px;font-family:ui-monospace,Consolas,monospace}
+  .bar{height:7px;background:#20242f;border-radius:99px;overflow:hidden;margin-top:8px}
+  .bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3f6fd8,#5b8cff);
+    border-radius:99px;transition:width .4s ease}
+  .bar.done>i{background:var(--ok)}
+  .bar.warn>i{background:var(--warn)}
+  .bar.failed>i{background:var(--err)}
+  .bar.cancelled>i{background:var(--warn)}
+  .progmsg{color:var(--muted);font-size:11.5px;margin-top:7px;
+    font-family:ui-monospace,Consolas,monospace;min-height:18px}
+
+  .stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:10px;margin-top:14px}
+  .stat div{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .stat span{display:block;color:var(--dim);font-size:11px;margin-bottom:2px}
+  .stat b{font-weight:600;font-size:12.5px;font-family:ui-monospace,Consolas,monospace}
+
+  video{width:100%;border-radius:9px;background:#000;border:1px solid var(--line);margin-top:12px;
+    max-height:520px}
+
+  table.chunks{width:100%;border-collapse:collapse;margin-top:12px;font-size:11.5px}
+  table.chunks th,table.chunks td{text-align:right;padding:5px 8px;
+    border-bottom:1px solid rgba(39,44,58,.6);font-family:ui-monospace,Consolas,monospace}
+  table.chunks th{color:var(--dim);font-weight:500;font-family:inherit}
+  table.chunks td:first-child,table.chunks th:first-child{text-align:left}
+  table.checks{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px}
+  table.checks td{padding:5px 8px;border-bottom:1px solid rgba(39,44,58,.6)}
+  table.checks td:last-child{text-align:right;font-family:ui-monospace,Consolas,monospace}
+  .yes{color:var(--ok)}.no{color:var(--err)}.mid{color:var(--muted)}
+
+  details.log{margin-top:12px;font-size:11.5px;color:var(--muted)}
+  details.log pre{max-height:240px;overflow:auto;background:#0b0d12;border:1px solid var(--line);
+    border-radius:8px;padding:10px;font-size:11px;line-height:1.5;
+    font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  summary{cursor:pointer;color:var(--dim)}
+  .hide{display:none !important}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99;
+    background:#222838;border:1px solid var(--line);border-radius:9px;padding:10px 16px;
+    font-size:12.5px;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:80vw}
+  .toast.err{border-color:rgba(255,92,92,.5);color:#ffd4d4}
+  .uphint{font-size:11.5px;color:var(--muted);text-align:center;margin-top:8px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>视频超分操作台</h1>
+  <span class="sub">Real-ESRGAN · 分块流水线</span>
+  <nav><a href="/">图片超分</a><a href="/video" class="on">视频超分</a></nav>
+  <div class="spacer"></div>
+  <div class="engine"><i class="dot" id="dot"></i><span id="engtxt">检测中…</span></div>
+</header>
+
+<main>
+  <!-- 左栏 -->
+  <div>
+    <div class="card">
+      <div class="hd">1 · 选择视频</div>
+      <div class="bd">
+        <div id="drop" class="drop">
+          <div class="big">拖拽视频到这里</div>
+          <div class="sm">或点击选择文件 · mp4 / mov / mkv / webm / avi …</div>
+        </div>
+        <input type="file" id="file" accept="video/*" class="hide">
+        <div id="up" class="uphint hide"></div>
+        <div id="info" class="infobox hide" style="margin-top:12px">
+          <b id="iname"></b>
+          <div class="kv">
+            <i>分辨率</i><em id="idim"></em>
+            <i>帧率</i><em id="ifps"></em>
+            <i>时长</i><em id="idur"></em>
+            <i>帧数</i><em id="iframes"></em>
+            <i>音轨</i><em id="iaudio"></em>
+            <i>大小</i><em id="isize"></em>
+          </div>
+          <div style="margin-top:9px"><button class="btn ghost" style="padding:5px 10px;width:auto" id="clearbtn">换一个</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="hd">2 · 参数</div>
+      <div class="bd" id="paramcard" style="opacity:.45;pointer-events:none">
+        <div class="field">
+          <div class="lab"><span>模型</span><span class="hint" id="modelnote"></span></div>
+          <select id="model"></select>
+        </div>
+
+        <div class="field">
+          <div class="lab"><span>超分倍率</span><span class="hint">决定母版大小</span></div>
+          <select id="scale"></select>
+        </div>
+
+        <div class="field">
+          <div class="lab"><span>输出方式</span><span class="hint" id="modehint"></span></div>
+          <div class="row">
+            <select id="mode">
+              <option value="scale">按倍率原样输出</option>
+              <option value="long">指定长边（保持比例）</option>
+              <option value="exact">精确宽×高（可能拉伸）</option>
+            </select>
+            <select id="longedge" class="hide" style="max-width:150px">
+              <option value="1920">长边 1920</option>
+              <option value="2560">长边 2560（2K）</option>
+              <option value="3840" selected>长边 3840（4K）</option>
+            </select>
+          </div>
+          <div class="row hide" id="exactrow" style="margin-top:9px">
+            <input type="number" id="tw" placeholder="宽">
+            <input type="number" id="th" placeholder="高">
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="lab"><span>分块帧数</span><span class="hint">越小临时盘占用越低</span></div>
+          <input type="number" id="chunk" value="240" min="1" max="5000">
+        </div>
+
+        <div class="field">
+          <details>
+            <summary>高级选项</summary>
+            <div style="margin-top:10px">
+              <div class="row">
+                <div>
+                  <div class="lab"><span>CRF（越小越清晰）</span></div>
+                  <input type="number" id="crf" value="16" min="0" max="51">
+                </div>
+                <div>
+                  <div class="lab"><span>preset</span></div>
+                  <select id="preset">
+                    <option value="">自动</option>
+                    <option value="faster">faster</option>
+                    <option value="fast">fast</option>
+                    <option value="medium">medium</option>
+                    <option value="slow">slow</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row" style="margin-top:10px">
+                <div>
+                  <div class="lab"><span>tile</span></div>
+                  <select id="tile">
+                    <option value="0">自动</option>
+                    <option value="128">128（省显存）</option>
+                    <option value="256">256</option>
+                  </select>
+                </div>
+                <div>
+                  <div class="lab"><span>GPU</span></div>
+                  <input type="text" id="gpu" placeholder="自动">
+                </div>
+              </div>
+              <label class="ck" style="margin-top:9px">
+                <input type="checkbox" id="verify"> 成片逐帧解码校验（慢，但能抓出分块边界缺帧）
+              </label>
+              <label class="ck">
+                <input type="checkbox" id="keep"> 保留临时帧（排错用，很占盘）
+              </label>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="hd">3 · 计划预览 <span class="n" id="planstate"></span></div>
+      <div class="bd" id="planbox">
+        <div class="empty" style="padding:18px">选一个视频后自动计算</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="hd">历史任务 <span class="n" id="jobcount"></span></div>
+      <div class="joblist" id="joblist"><div class="empty">还没有任务</div></div>
+    </div>
+  </div>
+
+  <!-- 右栏 -->
+  <div class="card">
+    <div class="hd">任务 <span class="n" id="tasktitle"></span>
+      <span style="flex:1"></span>
+      <button class="btn ghost hide" id="delbtn"
+        style="width:auto;padding:4px 11px;font-size:11.5px">删除任务</button>
+    </div>
+    <div class="bd" id="result">
+      <div class="empty">拖一个视频进来，会先给你算出计划（输出尺寸 / 分块数 / 临时盘占用），<br>
+        确认后再开始。视频超分是分钟级的，跑起来可以随时取消，<br>
+        已完成的分块会保留 —— <b style="color:#9db3db">再点一次「开始」就是续跑</b>。<br><br>
+        产物保存在 <code style="color:#9db3db">web/jobs-video/&lt;任务号&gt;/</code>。
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ============================================================ 状态 */
+const API = "";
+const S = {
+  cfg: null,
+  job: null,        // 当前任务（详情）
+  jobs: [],         // 列表
+  plan: null,
+  timer: null,
+  fails: 0,
+  planTimer: null,
+  uploading: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const MB = (b) => b == null ? "—"
+  : b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB"
+  : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : (b / 1024).toFixed(0) + " KB";
+const dur = (s) => s == null ? "—" : (s < 60 ? s.toFixed(1) + "s"
+  : Math.floor(s / 60) + "m" + String(Math.round(s % 60)).padStart(2, "0") + "s");
+const hhmm = (s) => {
+  if (s == null) return "—";
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+           : `${m}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function toast(msg, isErr) {
+  const d = document.createElement("div");
+  d.className = "toast" + (isErr ? " err" : "");
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 4600);
+}
+
+async function jget(url) {
+  const r = await fetch(API + url);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  return d;
+}
+async function jpost(url, body) {
+  const r = await fetch(API + url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  return d;
+}
+
+/* ============================================================ 参数 */
+function modelSpec(id) { return (S.cfg.models || []).find((m) => m.id === id); }
+
+// 长边 → 宽高（保持比例、偶数化）。直接给 4K 的 3840x2160 去打竖屏视频会把它拉扁，
+// 所以「指定长边」才是安全模式，「精确宽×高」要用户自己确认。
+function longToWH(long, w, h) {
+  let tw, th;
+  if (w >= h) { tw = long; th = Math.round(h * long / w); }
+  else { th = long; tw = Math.round(w * long / h); }
+  tw = Math.max(2, tw - (tw % 2));
+  th = Math.max(2, th - (th % 2));
+  return [tw, th];
+}
+
+function collectParams() {
+  const m = $("model").value;
+  const s = parseInt($("scale").value, 10) || 2;
+  const mode = $("mode").value;
+  let tw = 0, th = 0;
+  const src = S.job && S.job.src;
+  if (mode === "long" && src) {
+    [tw, th] = longToWH(parseInt($("longedge").value, 10) || 3840, src.w, src.h);
+  } else if (mode === "exact") {
+    tw = parseInt($("tw").value, 10) || 0;
+    th = parseInt($("th").value, 10) || 0;
+  }
+  return {
+    model: m, scale: s, target_width: tw, target_height: th,
+    chunk: parseInt($("chunk").value, 10) || 240,
+    crf: parseInt($("crf").value, 10),
+    preset: $("preset").value,
+    tile: $("tile").value,
+    gpu: $("gpu").value.trim(),
+    verify_frames: $("verify").checked,
+    keep_temp: $("keep").checked,
+  };
+}
+
+function onModelChange() {
+  const m = modelSpec($("model").value);
+  if (!m) return;
+  $("modelnote").textContent = m.available ? "" : "未安装";
+  const avail = m.available_scales.length ? m.available_scales : m.scales;
+  $("scale").innerHTML = avail.map((s) =>
+    `<option value="${s}">×${s}${s === 4 ? "" : ""}</option>`).join("");
+  $("scale").value = String(avail[avail.length - 1]);
+  onModeChange();
+}
+
+function onModeChange() {
+  const mode = $("mode").value;
+  $("longedge").classList.toggle("hide", mode !== "long");
+  $("exactrow").classList.toggle("hide", mode !== "exact");
+  const src = S.job && S.job.src;
+  if (mode === "scale") {
+    $("modehint").textContent = src ? "输出 = 源 ×倍率" : "";
+  } else if (mode === "long") {
+    $("modehint").textContent = src ? "保持比例" : "";
+    if (src) {
+      const [tw, th] = longToWH(parseInt($("longedge").value, 10) || 3840, src.w, src.h);
+      $("modehint").textContent = `→ ${tw}×${th}`;
+    }
+  } else {
+    $("modehint").textContent = "注意比例";
+    if (src && !$("tw").value) { $("tw").value = src.w * 2; $("th").value = src.h * 2; }
+  }
+  schedulePreview();
+}
+
+/* ============================================================ 上传 */
+function bindDrop() {
+  const dz = $("drop");
+  dz.onclick = () => $("file").click();
+  $("file").onchange = () => { if ($("file").files[0]) upload($("file").files[0]); };
+  ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => {
+    e.preventDefault(); dz.classList.add("over");
+  }));
+  ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => {
+    e.preventDefault(); dz.classList.remove("over");
+  }));
+  dz.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) upload(f);
+  });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+}
+
+function upload(file) {
+  if (S.uploading) return;
+  S.uploading = true;
+  $("up").classList.remove("hide");
+  $("up").textContent = `上传中… 0%　${file.name}`;
+  const q = new URLSearchParams({ name: file.name });
+
+  // 用 XHR 而不是 fetch：只有 XHR 能拿到上传进度
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", API + "/api/video/jobs?" + q.toString());
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const p = Math.round(e.loaded / e.total * 100);
+      $("up").textContent = `上传中… ${p}%　${file.name}（${MB(e.loaded)} / ${MB(e.total)}）`;
+    }
+  };
+  xhr.onload = () => {
+    S.uploading = false;
+    $("up").classList.add("hide");
+    let d = {};
+    try { d = JSON.parse(xhr.responseText); } catch (e) { /* ignore */ }
+    if (xhr.status >= 200 && xhr.status < 300) {
+      adopt(d);
+      toast("已读取视频信息，确认参数后点「开始超分」");
+    } else {
+      toast(d.error || ("上传失败 HTTP " + xhr.status), true);
+    }
+  };
+  xhr.onerror = () => {
+    S.uploading = false;
+    $("up").classList.add("hide");
+    toast("上传失败：网络错误", true);
+  };
+  xhr.send(file);
+}
+
+/* 左栏「已选视频」信息卡。上传新片和点历史任务都要用，抽出来避免两处不一致。 */
+function fillInfo(job) {
+  $("info").classList.remove("hide");
+  $("iname").textContent = job.src.name;
+  $("idim").textContent = `${job.src.w} × ${job.src.h}`;
+  $("ifps").textContent = job.src.fps.toFixed(3).replace(/\.?0+$/, "") + " fps"
+    + (job.src.vfr ? "（变帧率）" : "");
+  $("idur").textContent = hhmm(job.src.duration) + "s";
+  $("iframes").textContent = `${job.src.frames}（${job.src.frames_src}）`;
+  $("iaudio").textContent = job.src.has_audio ? job.src.audio_codec : "无";
+  $("isize").textContent = MB(job.src.bytes);
+  $("paramcard").style.opacity = "1";
+  $("paramcard").style.pointerEvents = "auto";
+}
+
+/* 把任务当时用的参数回填到左栏表单。
+   不这样做的话，点开一个历史任务，左栏显示的是「当前表单值」而不是那一跑的真实配置，
+   再点「开始超分」就会用错参数跑，而且因为参数变了，已完成分块也不会被复用。 */
+function applyParams(p, job) {
+  if (!p) return;
+  if (p.model) { $("model").value = p.model; onModelChange(); }   // 先刷新倍率可选项
+  if (p.scale != null) $("scale").value = String(p.scale);
+
+  const tw = p.target_width | 0, th = p.target_height | 0;
+  const src = job && job.src;
+  const longOpts = [...$("longedge").options].map((o) => Number(o.value));
+  if (!tw || !th) {
+    $("mode").value = "scale";
+  } else if (src && Math.abs(tw / th - src.w / src.h) < 0.01
+             && longOpts.includes(Math.max(tw, th))) {
+    // 比例与源一致、且长边正好是下拉里的档位 → 当初用的是「指定长边」模式
+    $("mode").value = "long";
+    $("longedge").value = String(Math.max(tw, th));
+  } else {
+    $("mode").value = "exact";
+    $("tw").value = tw;
+    $("th").value = th;
+  }
+
+  if (p.chunk != null) $("chunk").value = p.chunk;
+  if (p.crf != null) $("crf").value = p.crf;
+  if (p.preset != null) $("preset").value = p.preset;
+  if (p.tile != null) $("tile").value = p.tile;
+  if (p.gpu != null) $("gpu").value = p.gpu;
+  $("verify").checked = !!p.verify_frames;
+  $("keep").checked = !!p.keep_temp;
+  onModeChange();     // 顺带同步模式相关控件的显示/隐藏，并触发计划重算
+}
+
+function adopt(job) {
+  S.job = job;
+  fillInfo(job);
+  loadJobs();
+  schedulePreview();
+}
+
+/* ============================================================ 计划预览 */
+function schedulePreview() {
+  if (!S.job) return;
+  clearTimeout(S.planTimer);
+  S.planTimer = setTimeout(preview, 260);
+}
+
+async function preview() {
+  if (!S.job || !S.cfg || !S.cfg.tool.ok) return;
+  if (S.job.status === "running" || S.job.status === "queued") return;
+  $("planstate").textContent = "计算中…";
+  try {
+    const pl = await jpost(`/api/video/jobs/${S.job.id}/plan`, collectParams());
+    S.plan = pl;
+    paintPlan(pl);
+    $("planstate").textContent = "";
+  } catch (e) {
+    $("planstate").textContent = "";
+    $("planbox").innerHTML = `<div class="note err">${esc(e.message)}</div>`;
+  }
+}
+
+function paintPlan(pl) {
+  const same = pl.final_w === pl.out_w && pl.final_h === pl.out_h;
+  const ratio = (pl.final_w / pl.src_w).toFixed(2);
+  let warns = (pl.warn || []).map((w) => `<div>· ${esc(w)}</div>`).join("");
+  $("planbox").innerHTML = `
+    <div class="plan">
+      <div class="big">
+        <b>${pl.final_w} × ${pl.final_h}</b>
+        <span>源 ${pl.src_w}×${pl.src_h} → ${ratio}×</span>
+      </div>
+      <div class="g">
+        <div><i>超分</i><em>${esc(pl.model.replace("realesr-", "").replace("realesrgan-", ""))} ×${pl.scale}</em></div>
+        <div><i>${same ? "超分输出" : "超分后缩放"}</i><em>${pl.out_w}×${pl.out_h}</em></div>
+        <div><i>分块</i><em>${pl.n_chunks} × ${pl.chunk} 帧</em></div>
+        <div><i>峰值临时盘</i><em>${MB(pl.peak_tmp)}</em></div>
+        <div><i>磁盘余量</i><em>${pl.disk_free > 0 ? MB(pl.disk_free) : "未知"}</em></div>
+        <div><i>编码</i><em>crf ${pl.crf} · ${esc(pl.preset)}</em></div>
+      </div>
+      ${pl.has_audio ? "" : `<div class="note info" style="margin-top:9px">源片无音轨，成片也不会有</div>`}
+      ${warns ? `<div class="note" style="margin-top:9px"><b>注意</b>${warns}</div>` : ""}
+    </div>`;
+}
+
+/* ============================================================ 开始 / 取消 / 删除 */
+async function go() {
+  if (!S.job) return;
+  try {
+    await jpost(`/api/video/jobs/${S.job.id}/start`, collectParams());
+    S.fails = 0;
+    await selectJob(S.job.id);
+    startPoll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function cancel() {
+  if (!S.job) return;
+  try {
+    await jpost(`/api/video/jobs/${S.job.id}/cancel`, {});
+    toast("已请求取消");
+    setTimeout(() => selectJob(S.job.id), 700);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function del() {
+  if (!S.job) return;
+  if (!confirm("删除这个任务及其产物？（分块也会一起删掉，之后重跑无法续跑）")) return;
+  try {
+    const r = await fetch(API + `/api/video/jobs/${S.job.id}`, { method: "DELETE" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    S.job = null; S.plan = null;
+    clearFields();
+    paintResult();
+    loadJobs();
+    dropHash();
+    toast("已删除");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* 清掉 #job= 深链，避免刷新后又把刚清空/删掉的任务选回来 */
+function dropHash() {
+  if (!location.hash) return;
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* ignore */ }
+}
+
+function clearFields() {
+  $("info").classList.add("hide");
+  $("paramcard").style.opacity = ".45";
+  $("paramcard").style.pointerEvents = "none";
+  $("planbox").innerHTML = `<div class="empty" style="padding:18px">选一个视频后自动计算</div>`;
+}
+
+/* ============================================================ 任务列表 / 轮询 */
+async function loadJobs() {
+  try {
+    const d = await jget("/api/video/jobs");
+    S.jobs = d.jobs || [];
+    paintJobList();
+  } catch (e) { /* ignore */ }
+}
+
+function paintJobList() {
+  const box = $("joblist");
+  $("jobcount").textContent = S.jobs.length ? "· " + S.jobs.length : "";
+  if (!S.jobs.length) { box.innerHTML = `<div class="empty">还没有任务</div>`; return; }
+  box.innerHTML = S.jobs.map((j) => `
+    <div class="job ${S.job && S.job.id === j.id ? "sel" : ""}" data-id="${j.id}">
+      <div class="ic">▶</div>
+      <div class="t">
+        <b>${esc(j.src.name)}</b>
+        <span>${j.src.w}×${j.src.h} · ${hhmm(j.src.duration)}s ${j.result ? "→ " + j.result.width + "×" + j.result.height : ""}</span>
+      </div>
+      <span class="pill ${j.status}">${statusText(j)}</span>
+    </div>`).join("");
+  box.querySelectorAll(".job").forEach((el) => {
+    el.onclick = () => selectJob(el.dataset.id);
+  });
+}
+
+function statusText(j) {
+  return { ready: "待设置", queued: "排队", running: j.progress ? j.progress.toFixed(0) + "%" : "运行中",
+           done: "完成", warn: "有问题", failed: "失败", cancelled: "已取消" }[j.status] || j.status;
+}
+
+async function selectJob(id) {
+  try {
+    const d = await jget("/api/video/jobs/" + id);
+    S.job = d;
+    fillInfo(d);
+    applyParams(d.params, d);
+    paintJobList();
+    paintResult();
+    // 记住选中项：刷新页面后还在同一个任务上
+    try { history.replaceState(null, "", "#job=" + encodeURIComponent(id)); } catch (e) { /* ignore */ }
+    if (d.status === "queued" || d.status === "running") startPoll();
+  } catch (e) { toast(e.message, true); }
+}
+
+function startPoll() {
+  stopPoll();
+  S.fails = 0;
+  S.timer = setInterval(tick, 1500);
+}
+function stopPoll() {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+}
+
+let busy = false;
+async function tick() {
+  if (busy) return;
+  busy = true;
+  try {
+    await loadJobs();
+    if (S.job) {
+      const d = await jget("/api/video/jobs/" + S.job.id);
+      S.job = d;
+      paintResult();
+      paintJobList();
+    }
+    S.fails = 0;
+    const active = S.jobs.some((j) => j.status === "queued" || j.status === "running");
+    if (!active) stopPoll();
+  } catch (e) {
+    // 连续失败就停手：否则请求一直报错会让页面（含无头截图的虚拟时钟）永远等下去
+    if (++S.fails >= 5) stopPoll();
+  }
+  busy = false;
+}
+
+/* ============================================================ 结果区 */
+function paintResult() {
+  const j = S.job, box = $("result");
+  $("tasktitle").textContent = j ? "· " + j.src.name : "";
+  $("delbtn").classList.toggle("hide", !j || j.status === "running" || j.status === "queued");
+  if (!j) {
+    box.innerHTML = `<div class="empty">拖一个视频进来，会先给你算出计划（输出尺寸 / 分块数 / 临时盘占用），<br>
+      确认后再开始。视频超分是分钟级的，跑起来可以随时取消，<br>
+      已完成的分块会保留 —— <b style="color:#9db3db">再点一次「开始」就是续跑</b>。<br><br>
+      产物保存在 <code style="color:#9db3db">web/jobs-video/&lt;任务号&gt;/</code>。</div>`;
+    return;
+  }
+
+  const running = j.status === "queued" || j.status === "running";
+  const p = j.params || {};
+  const pl = j.plan || {};
+  const res = j.result;
+
+  let html = `
+    <div class="stat">
+      <div><span>源</span><b>${j.src.w}×${j.src.h}</b></div>
+      <div><span>目标</span><b>${pl.final_w ? pl.final_w + "×" + pl.final_h : "—"}</b></div>
+      <div><span>模型</span><b>×${p.scale || "?"} ${esc((p.model || "").replace("realesr-", "").replace("realesrgan-", ""))}</b></div>
+      <div><span>帧数</span><b>${j.done_frames != null ? j.done_frames : 0} / ${j.total_frames || j.src.frames}</b></div>
+      <div><span>耗时</span><b id="el">${j.elapsed != null ? dur(j.elapsed) : (running ? "…" : "—")}</b></div>
+      <div><span>速度</span><b>${j.rate ? j.rate.toFixed(3) + " s/帧" : "—"}</b></div>
+    </div>`;
+
+  if (running || j.status === "ready") {
+    const pct = j.progress || 0;
+    html += `
+      <div class="progwrap" style="margin-top:14px">
+        <div class="proghead">
+          <b>${pct.toFixed(1)}%</b>
+          <span class="st">${esc(j.stage || "")}</span>
+          <span class="sp"></span>
+          <span class="eta">${j.eta ? "剩 ~" + hhmm(j.eta) : ""} ${j.phase ? "· " + esc(j.phase) : ""}</span>
+        </div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+        <div class="progmsg">${esc(j.message || "")}</div>
+      </div>
+      <div class="note info" style="margin-top:11px">
+        超分阶段每帧都会刷百分比；<b>抽帧/编码阶段没有分步回报</b>，进度会停一会儿再跳，属正常。
+      </div>`;
+  } else {
+    const cls = j.status === "done" ? "done" : j.status === "warn" ? "warn"
+      : j.status === "cancelled" ? "cancelled" : "failed";
+    html += `
+      <div class="progwrap" style="margin-top:14px">
+        <div class="proghead">
+          <b>${j.status === "done" ? "100.0%" : (j.progress || 0).toFixed(1) + "%"}</b>
+          <span class="st">${esc(j.stage || "")}</span>
+          <span class="sp"></span>
+          <span class="eta">${esc(j.message || "")}</span>
+        </div>
+        <div class="bar ${cls}"><i style="width:${j.status === "done" ? 100 : (j.progress || 0)}%"></i></div>
+      </div>`;
+  }
+
+  if (j.error) {
+    html += `<div class="note err" style="margin-top:11px"><b>失败原因</b>${esc(j.error)}</div>`;
+  }
+  if (j.status === "cancelled") {
+    html += `<div class="note" style="margin-top:11px">已取消。<b>已完成的分块保留在 work/_segs/</b>
+      再点「开始超分」会复用它们接着跑，不会从头来。</div>`;
+  }
+
+  if (res) {
+    const f = res.out_name;
+    const src = `${API}/api/video/jobs/${j.id}/file/${encodeURIComponent(f)}`;
+    html += `
+      <video controls preload="metadata" src="${src}"></video>
+      <div class="btnrow" style="margin-top:10px">
+        <a class="btn ghost" style="text-decoration:none" href="${src}?download=1"
+           download>下载成片（${MB(res.bytes)}）</a>
+      </div>
+      <table class="checks">
+        <tr><td>输出</td><td>${res.width}×${res.height} @ ${res.fps.toFixed(3).replace(/\.?0+$/, "")}fps</td></tr>
+        <tr><td>时长</td><td>${hhmm(res.duration)}s（源 ${hhmm(j.src.duration)}s）</td></tr>
+        <tr><td>尺寸</td><td class="${res.checks.dims ? "yes" : "no"}">${res.checks.dims ? "✓" : "✗"}</td></tr>
+        <tr><td>帧率</td><td class="${res.checks.fps ? "yes" : "no"}">${res.checks.fps ? "✓" : "✗"}</td></tr>
+        <tr><td>音轨</td><td class="${res.checks.audio ? "yes" : "no"}">${res.checks.audio ? "✓" : "✗"}</td></tr>
+        <tr><td>时长差</td><td class="${Math.abs(res.checks.drift) <= 0.5 ? "yes" : "no"}">${res.checks.drift >= 0 ? "+" : ""}${res.checks.drift}s</td></tr>
+        <tr><td>帧数</td><td class="${res.checks.frames === false ? "no" : res.checks.frames ? "yes" : "mid"}">
+          ${res.frames} / ${res.total_frames}${res.checks.frames === null ? "（未判定）" : res.checks.frames ? " ✓" : " ✗ 缺帧"}</td></tr>
+      </table>`;
+    if (res.problems && res.problems.length) {
+      html += `<div class="note" style="margin-top:11px"><b>有问题</b>
+        ${res.problems.map((x) => `<div>· ${esc(x)}</div>`).join("")}</div>`;
+    }
+    if (res.reused_chunks) {
+      html += `<div class="note info" style="margin-top:11px">
+        本次复用了 ${res.reused_chunks} 个已完成分块（${res.processed_frames} 帧是重新处理的）</div>`;
+    }
+  }
+
+  const tg = j.timings || [];
+  if (tg.length > 1) {
+    const head = tg.slice(0, 12).map((t) => `
+      <tr><td>#${(t.chunk ?? 0) + 1}</td><td>${t.frames}</td>
+        <td>${t.extract}s</td><td>${t.upscale}s</td><td>${t.encode}s</td>
+        <td>${((t.extract + t.upscale + t.encode) / Math.max(1, t.frames)).toFixed(3)}</td></tr>`).join("");
+    html += `
+      <details class="log" open><summary>分块耗时（前 ${Math.min(12, tg.length)} 块，共 ${tg.length}）</summary>
+        <table class="chunks">
+          <tr><th>块</th><th>帧</th><th>抽帧s</th><th>超分s</th><th>编码s</th><th>s/帧</th></tr>
+          ${head}
+        </table>
+      </details>`;
+  }
+
+  if ((j.log || []).length) {
+    html += `<details class="log"><summary>运行日志（${j.log.length} 行）</summary>
+      <pre>${esc(j.log.join("\n"))}</pre></details>`;
+  }
+
+  html += `<div class="btnrow">
+      ${running
+        ? `<button class="btn danger" onclick="cancel()">取消</button>`
+        : `<button class="btn" onclick="go()">${res ? "重新超分（可续跑）" : "开始超分"}</button>`}
+      <button class="btn ghost" style="flex:0 0 130px" onclick="preview()">重算计划</button>
+    </div>`;
+
+  box.innerHTML = html;
+}
+
+/* ============================================================ 启动 */
+async function boot() {
+  try {
+    S.cfg = await jget("/api/video/config");
+  } catch (e) {
+    $("engtxt").textContent = "服务不可用";
+    $("dot").className = "dot off";
+    return;
+  }
+  const t = S.cfg.tool;
+  $("dot").className = "dot " + (t.ok ? "on" : "off");
+  $("engtxt").textContent = t.ok ? `引擎就绪 · ${t.models.length} 个模型` : "引擎不可用";
+
+  $("model").innerHTML = S.cfg.models.map((m) =>
+    `<option value="${m.id}" ${m.available ? "" : "disabled"}>${esc(m.id)}${m.available ? "" : "（未安装）"}</option>`
+  ).join("");
+  $("model").value = S.cfg.default_model;
+  $("chunk").value = S.cfg.default_chunk;
+
+  $("model").onchange = onModelChange;
+  $("scale").onchange = schedulePreview;
+  $("mode").onchange = onModeChange;
+  $("longedge").onchange = onModeChange;
+  ["chunk", "crf", "preset", "tile", "gpu", "tw", "th"].forEach((id) => {
+    $(id).onchange = schedulePreview;
+  });
+  ["verify", "keep"].forEach((id) => { $(id).onchange = schedulePreview; });
+  onModelChange();
+
+  await loadJobs();
+
+  // 自动选中：URL 深链 → 正在跑的 → 最新一个。
+  // 不自动选的话，用户中途打开页面右栏是空态，会以为没有任务在跑。
+  const want = new URLSearchParams(location.hash.replace(/^#/, "")).get("job");
+  const hit = want && S.jobs.find((j) => j.id === want);
+  const pick = hit
+    || S.jobs.find((j) => j.status === "running" || j.status === "queued")
+    || S.jobs[0];
+  if (pick) await selectJob(pick.id);
+
+  startPoll();
+}
+
+$("clearbtn").onclick = () => {
+  S.job = null; S.plan = null;
+  clearFields(); paintResult(); paintJobList(); dropHash();
+};
+bindDrop();
+boot();
+</script>
+</body>
+</html>

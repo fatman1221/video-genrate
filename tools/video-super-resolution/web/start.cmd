@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title 图片超分操作台
+title 图片 / 视频超分操作台
 cd /d "%~dp0"
 
 rem 清掉宿主注入的 PYTHONPATH：它会让 Python 加载到非预期模块

@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""图片超分操作台 —— Real-ESRGAN (ncnn-vulkan) 本地 Web UI
+"""超分操作台 —— Real-ESRGAN (ncnn-vulkan) 本地 Web UI（图片 + 视频）
 
 用法：
     python web/server.py                 # 默认 http://127.0.0.1:8090
     python web/server.py --port 8090 --open
 
+页面：
+    /            图片超分（一步到位，一次超分派生 2K/4K 多档）
+    /video       视频超分（分块流水线：抽帧 → 超分 → 编码 → 拼接，长任务、可取消、可续跑）
+
 设计要点
 --------
-1. **只用标准库**（不依赖工程 .venv）。PIL 仅在「母版 -> 各档位」降采样派生时用。
-2. **一次超分、派生多档**：只跑一次最重的母版超分，2K/4K 等档位由母版降采样得到。
-   比「每档各跑一次超分」更省时，且各档观感严格一致（不会两档细节风格不同）。
-3. **真实进度**：进度直接解析 exe stdout 的 `xx.xx%`，不是估出来的假进度条。
-4. 任务**串行**执行（GPU 独占），排队中可取消。
-5. 记录落盘到 `web/jobs/<id>/`，刷新页面/重启服务后历史仍在（源图与成图都在）。
-
-与 Skill 的关系：这是 `scripts/upscale_video.py` 的**图片版操作界面**，工具发现规则
-（REALESRGAN_BIN / REALESRGAN_MODELS / 托管目录）与那支脚本保持一致。
+1. **只用标准库**（不依赖工程 .venv）。PIL 仅在图片「母版 -> 各档位」降采样派生时用。
+2. 图片：**一次超分、派生多档** —— 只跑一次最重的母版超分，2K/4K 等档位由母版降采样
+   得到。比「每档各跑一次超分」更省时，且各档观感严格一致。
+3. 视频：**复用 scripts/upscale_video.py 的 run_pipeline**，不另写一套（见 video_jobs.py）。
+   大文件走原始字节流上传，不走 base64。
+4. **真实进度**：图片与视频的百分比都直接解析 exe stdout 的 `xx.xx%`，不是估出来的。
+5. 任务**串行**执行（GPU 独占），排队中可取消；视频取消会杀掉子进程树。
+6. 记录落盘：图片 `web/jobs/<id>/`、视频 `web/jobs-video/<id>/`，刷新/重启后历史仍在
+   （视频的 `work/_segs/` 保留已完成分块，重跑即续跑）。
 """
 
 from __future__ import annotations
@@ -37,13 +41,20 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+import video_jobs
+from video_jobs import VideoService
 
 # ---------------------------------------------------------------- 路径
 
 HERE = Path(__file__).resolve().parent
 JOBS_DIR = HERE / "jobs"
 INDEX_HTML = HERE / "index.html"
+VIDEO_HTML = HERE / "video.html"
+
+# 视频任务服务（复用 scripts/upscale_video.py 的流水线，见 web/video_jobs.py）
+SVC = VideoService(verbose=bool(os.environ.get("SR_STUDIO_VERBOSE")))
 
 MANAGED_RGAN = (Path.home() / ".workbuddy" / "tools"
                 / "realesrgan-ncnn-vulkan" / "realesrgan-ncnn-vulkan.exe")
@@ -72,6 +83,14 @@ MODEL_SPECS: dict[str, dict] = {
 DEFAULT_MODEL = "realesrgan-x4plus"
 
 FORMATS = {"png": "PNG", "jpg": "JPEG", "webp": "WEBP"}
+
+MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".html": "text/html; charset=utf-8",
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska", ".webm": "video/webm", ".ts": "video/mp2t",
+    ".avi": "video/x-msvideo",
+}
 
 MAX_UPLOAD = 200 * 1024 * 1024        # 请求体上限（base64 后）
 PCT_RE = re.compile(rb"(\d+(?:\.\d+)?)\s*%")
@@ -452,6 +471,21 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(f"请求体过大（{n / 1048576:.0f}MB > {MAX_UPLOAD / 1048576:.0f}MB）")
         return self.rfile.read(n) if n else b""
 
+    def _json_body(self) -> dict | None:
+        """解析 JSON 请求体；不合法就回 400 并返回 None（调用方直接 return）。"""
+        try:
+            raw = self._body()
+        except ValueError as e:
+            self._err(413, str(e))
+            return None
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            self._err(400, "请求体不是合法 JSON")
+            return None
+
     def _file(self, path: Path, ctype: str | None = None, download: bool = False) -> None:
         try:
             blob = path.read_bytes()
@@ -477,6 +511,68 @@ class Handler(BaseHTTPRequestHandler):
         p = (d / name).resolve()
         return p if p.parent == d and p.is_file() else None
 
+    def _stream(self, path: Path, *, download: bool = False,
+                ctype: str | None = None) -> None:
+        """带 Range 的流式响应。
+
+        视频必须支持 Range：否则 <video> 拖动进度条会重新下载整个文件，
+        几百 MB 的成片根本没法看。
+        """
+        try:
+            size = path.stat().st_size
+        except OSError:
+            self._err(404, "文件不存在")
+            return
+        ctype = ctype or MIME.get(path.suffix.lower(), "application/octet-stream")
+
+        start, end, partial = 0, max(0, size - 1), False
+        m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+        if m and size:
+            g1, g2 = m.group(1), m.group(2)
+            if g1:
+                start = int(g1)
+                end = int(g2) if g2 else size - 1
+            elif g2:                                  # bytes=-N → 末尾 N 字节
+                start = max(0, size - int(g2))
+                end = size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+            partial = True
+
+        n = end - start + 1 if size else 0
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(n))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        if download:
+            # 中文文件名不能直接塞进 filename= —— 用 RFC 5987 的 filename*
+            ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", path.name) or "file"
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(path.name)}')
+        self.end_headers()
+        if not n:
+            return
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                left = n
+                while left > 0:
+                    buf = fh.read(min(262144, left))
+                    if not buf:
+                        break
+                    self.wfile.write(buf)
+                    left -= len(buf)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     # ---- 路由
 
     def do_GET(self) -> None:
@@ -487,6 +583,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._err(500, "index.html 缺失")
                     return
                 self._file(INDEX_HTML)
+                return
+
+            if path in ("/video", "/video.html"):
+                if not VIDEO_HTML.is_file():
+                    self._err(500, "video.html 缺失")
+                    return
+                self._file(VIDEO_HTML)
                 return
 
             if path == "/api/config":
@@ -549,6 +652,63 @@ class Handler(BaseHTTPRequestHandler):
                 self._file(p, download=dl)
                 return
 
+            # ---------------- 视频 ----------------
+
+            if path == "/api/video/config":
+                rep = SVC.tools()
+                self._json({
+                    "tool": rep,
+                    "models": [
+                        {"id": m, "scales": sorted(s),
+                         "available_scales": rep["available"].get(m, []),
+                         "available": m in rep["models"]}
+                        for m, s in video_jobs.uv.MODEL_SCALES.items()
+                    ],
+                    "default_model": video_jobs.uv.DEFAULT_MODEL,
+                    "default_chunk": video_jobs.uv.DEFAULT_CHUNK,
+                    "defaults": video_jobs.DEFAULT_PARAMS,
+                    "ext": sorted(video_jobs.VIDEO_EXT),
+                    "max_upload_mb": video_jobs.MAX_UPLOAD // 1048576,
+                    "jobs_dir": "web/jobs-video/",
+                })
+                return
+
+            if path == "/api/video/jobs":
+                self._json({"jobs": SVC.list()})
+                return
+
+            m = re.fullmatch(r"/api/video/jobs/([A-Za-z0-9_-]+)", path)
+            if m:
+                job = SVC.get(m.group(1))
+                if not job:
+                    self._err(404, "任务不存在")
+                    return
+                self._json(SVC.public(job))
+                return
+
+            m = re.fullmatch(r"/api/video/jobs/([A-Za-z0-9_-]+)/source", path)
+            if m:
+                job = SVC.get(m.group(1))
+                if not job:
+                    self._err(404, "任务不存在")
+                    return
+                p = SVC.file_path(m.group(1), job["src"]["file"])
+                if not p:
+                    self._err(404, "源片不存在")
+                    return
+                self._stream(p)
+                return
+
+            m = re.fullmatch(r"/api/video/jobs/([A-Za-z0-9_-]+)/file/([^/]+)", path)
+            if m:
+                dl = "download=1" in (urlparse(self.path).query or "")
+                p = SVC.file_path(m.group(1), m.group(2))
+                if not p:
+                    self._err(404, "文件不存在")
+                    return
+                self._stream(p, download=dl)
+                return
+
             self._err(404, "not found")
         except Exception as e:
             traceback.print_exc()
@@ -581,6 +741,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
                 return
 
+            # ---------------- 视频 ----------------
+
+            if path == "/api/video/jobs":
+                self._create_video_job()
+                return
+
+            m = re.fullmatch(r"/api/video/jobs/([A-Za-z0-9_-]+)/(plan|start|cancel)", path)
+            if m:
+                jid, act = m.group(1), m.group(2)
+                if act == "cancel":
+                    try:
+                        self._json(SVC.cancel(jid))
+                    except ValueError as e:
+                        self._err(404, str(e))
+                    return
+                raw = self._json_body()
+                if raw is None:
+                    return
+                try:
+                    if act == "plan":
+                        self._json(SVC.plan(jid, raw))
+                    else:
+                        self._json(SVC.start(jid, raw), 201)
+                except ValueError as e:
+                    self._err(400, str(e))
+                except Exception as e:
+                    traceback.print_exc()
+                    self._err(500, str(e))
+                return
+
             self._err(404, "not found")
         except Exception as e:
             traceback.print_exc()
@@ -588,6 +778,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = unquote(urlparse(self.path).path)
+        m = re.fullmatch(r"/api/video/jobs/([A-Za-z0-9_-]+)", path)
+        if m:
+            try:
+                ok = SVC.delete(m.group(1))
+            except ValueError as e:
+                self._err(409, str(e))
+                return
+            if not ok:
+                self._err(404, "任务不存在")
+                return
+            self._json({"ok": True})
+            return
         m = re.fullmatch(r"/api/jobs/([A-Za-z0-9_-]+)", path)
         if not m:
             self._err(404, "not found")
@@ -717,6 +919,47 @@ class Handler(BaseHTTPRequestHandler):
         TASK_Q.put(jid)
         self._json({"job_id": jid}, 201)
 
+    # ---- 上传视频
+
+    def _create_video_job(self) -> None:
+        """按 Content-Length 边收边落盘 —— **不走 base64**。
+
+        一段 300MB 的片子 base64 后要 400MB 的 JSON 字符串，只能用来传图；
+        这里内存占用与文件大小无关（每次只拿 1MB）。
+        """
+        q = parse_qs(urlparse(self.path).query)
+        name = (q.get("name") or ["video.mp4"])[0]
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            self._err(400, "没有收到数据")
+            return
+        if n > video_jobs.MAX_UPLOAD:
+            self._err(413, f"文件过大（{n / 1073741824:.2f}GB > "
+                           f"{video_jobs.MAX_UPLOAD / 1073741824:.0f}GB）")
+            return
+
+        jid, dest = SVC.begin_upload(name)
+        try:
+            with open(dest, "wb") as fh:
+                left = n
+                while left > 0:
+                    buf = self.rfile.read(min(video_jobs.CHUNK_READ, left))
+                    if not buf:
+                        raise ValueError(f"上传中断（还差 {left} 字节）")
+                    fh.write(buf)
+                    left -= len(buf)
+            job = SVC.finish_upload(jid, name, dest, n)
+        except ValueError as e:
+            shutil.rmtree(video_jobs.JOBS_DIR / jid, ignore_errors=True)
+            self._err(400, str(e))
+            return
+        except Exception as e:
+            traceback.print_exc()
+            shutil.rmtree(video_jobs.JOBS_DIR / jid, ignore_errors=True)
+            self._err(500, str(e))
+            return
+        self._json(job, 201)
+
     # ---- 日志
 
     def log_message(self, fmt: str, *a) -> None:
@@ -738,10 +981,14 @@ def main() -> None:
     load_jobs_from_disk()
     threading.Thread(target=worker_loop, daemon=True).start()
 
+    video_jobs.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    SVC.load()
+    SVC.start_worker()
+
     rep = tool_report()
     url = f"http://{args.host}:{args.port}/"
     print("=" * 64)
-    print("  图片超分操作台  Real-ESRGAN (ncnn-vulkan)")
+    print("  超分操作台  Real-ESRGAN (ncnn-vulkan)")
     print("=" * 64)
     if rep["ok"]:
         print(f"  引擎   {rep['exe']}")
@@ -749,8 +996,9 @@ def main() -> None:
     else:
         print(f"  ✗ 引擎不可用：{rep['hint']}")
     n_done = sum(1 for j in JOBS.values() if j.get("status") == "done")
-    print(f"  历史   {len(JOBS)} 个任务（{n_done} 个已完成）  产物目录 web/jobs/")
-    print(f"  地址   {url}")
+    v_done = sum(1 for j in SVC.jobs.values() if j.get("status") == "done")
+    print(f"  图片   {len(JOBS)} 个任务（{n_done} 已完成）  {url}")
+    print(f"  视频   {len(SVC.jobs)} 个任务（{v_done} 已完成）  {url}video")
     print("  停止   Ctrl+C")
     print("=" * 64)
 

@@ -23,8 +23,12 @@ backend/.venv/
 tools/*/models/
 tools/*/venv/
 tools/*/outputs/
-# 超分操作台的任务产物（源图 + 成图 + meta.json，体积大且可重跑）
+# 超分操作台的任务产物（源图 + 成图 + meta.json / 视频分块与成片，体积大且可重跑）
 tools/*/web/jobs/
+tools/*/web/jobs-video/
+# selftest 的临时产物（探针会生成几百张输入图；正常跑完会自动清）
+tools/*/web/selftest/_procprobe/
+tools/*/web/selftest/_e2e_out.mp4
 
 # --------------------------------------------------------------------------- #
 # Python

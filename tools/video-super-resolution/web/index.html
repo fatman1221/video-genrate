@@ -31,6 +31,10 @@
   }
   header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.3px}
   header .sub{color:var(--dim);font-size:12px}
+  header nav{display:flex;gap:4px;margin-left:6px}
+  header nav a{font-size:12px;padding:4px 10px;border-radius:7px;color:var(--muted)}
+  header nav a:hover{background:var(--panel2);text-decoration:none}
+  header nav a.on{background:#1b2a4d;color:#cfe0ff}
   .spacer{flex:1}
   .engine{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
     padding:5px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:99px}
@@ -191,6 +195,7 @@
 <header>
   <h1>图片超分操作台</h1>
   <span class="sub">Real-ESRGAN · ncnn-vulkan</span>
+  <nav><a href="/" class="on">图片超分</a><a href="/video">视频超分</a></nav>
   <div class="spacer"></div>
   <div class="engine"><i class="dot" id="dot"></i><span id="engtxt">检测中…</span></div>
 </header>
