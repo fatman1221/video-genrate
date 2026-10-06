@@ -10,10 +10,16 @@
 
 占位符约定（与 providers/image_providers.py 的 `_substitute` 保持一致）：
     {{prompt}}  {{negative_prompt}}  {{width}}  {{height}}  {{seed}}
+    {{steps}}   {{cfg}}            —— 采样参数，模板用 __meta__.defaults 声明默认值
 
     - 整个字符串就是 `{{key}}` 时：原样替换为对应的**非字符串**值（保留 int 类型，
       ComfyUI 的 width/height/seed 必须是数字，不能是 "512" 这种字符串）。
     - 字符串中内嵌 `{{key}}` 时：做文本替换，结果是字符串。
+
+为什么 steps / cfg 要做成占位符：
+    它们原先**写死在模板 JSON 里**，项目/单次调用都无法覆盖 —— 结果是「在 ComfyUI 里
+    调好的那套参数在 Studio 里复刻不出来」。改成占位符 + `__meta__.defaults` 之后，
+    模板自述默认值，调用方按需覆盖，缺省行为与改前完全一致。
 
 模板存放位置：
     backend/app/workflows/templates/*.json      （随源码走，随仓库分发）
@@ -32,7 +38,12 @@ from typing import Any
 BUILTIN_DIR = Path(__file__).resolve().parent / "templates"
 
 #: 模板里会被替换的占位符；用于校验与提示
-PLACEHOLDER_KEYS = ("prompt", "negative_prompt", "width", "height", "seed")
+PLACEHOLDER_KEYS = ("prompt", "negative_prompt", "width", "height", "seed", "steps", "cfg")
+
+#: 需要强制转成整数的占位符（ComfyUI 不接受字符串形式的步数）
+_INT_KEYS = ("width", "height", "seed", "steps")
+#: 需要强制转成浮点的占位符
+_FLOAT_KEYS = ("cfg",)
 
 
 class WorkflowTemplateError(RuntimeError):
@@ -55,25 +66,30 @@ class WorkflowTemplate:
     #: 视频模板可声明帧数上限（如 MiniMax H3 训练范围 124~362 帧）；
     #: 超长镜头由 Provider 生成到上限后用 ffmpeg 减速补齐时长
     max_frames: int | None = None
+    #: `__meta__.defaults`：占位符的模板级默认值（如 {"steps": 20, "cfg": 2.5}）。
+    #: 调用方没有传该占位符时用这里的值兜底 —— 保证「模板不写死、但也不空转」。
+    defaults: dict[str, Any] = field(default_factory=dict)
 
     def render(self, *, prompt: str = "", negative_prompt: str = "",
                width: int | None = None, height: int | None = None,
                seed: int | None = None, **extra: Any) -> dict[str, Any]:
         """把占位符替换成真实值，返回可直接 POST /prompt 的 workflow dict。
 
+        取值优先级：**调用方显式传入 > 模板 `__meta__.defaults` > 模板字面量**。
+        传 None 视为「未指定」，会退回模板默认值（而不是把 None 写进 JSON）。
+
         返回的是深拷贝，调用方改动不会污染模板缓存。
         """
-        mapping: dict[str, Any] = {
-            "prompt": prompt,
-            "negative_prompt": negative_prompt,
-        }
-        if width is not None:
-            mapping["width"] = int(width)
-        if height is not None:
-            mapping["height"] = int(height)
-        if seed is not None:
-            mapping["seed"] = int(seed)
-        mapping.update(extra)
+        # 先铺模板默认值，再让显式入参覆盖（None 一律跳过，避免把 None 写进工作流）
+        mapping: dict[str, Any] = dict(self.defaults)
+        for key, value in (("prompt", prompt), ("negative_prompt", negative_prompt),
+                           ("width", width), ("height", height), ("seed", seed)):
+            if value is not None:
+                mapping[key] = value
+        for key, value in extra.items():
+            if value is not None:
+                mapping[key] = value
+        mapping = _coerce(mapping)
         return _substitute(this := copy.deepcopy(self.raw), mapping) or this
 
     def to_meta(self) -> dict[str, Any]:
@@ -83,8 +99,32 @@ class WorkflowTemplate:
             "description": self.description,
             "placeholders": list(self.placeholders),
             "models": list(self.models),
+            "defaults": dict(self.defaults),
             "path": str(self.path),
         }
+
+
+def _coerce(mapping: dict[str, Any]) -> dict[str, Any]:
+    """把数字类占位符转成 ComfyUI 要的类型。
+
+    ComfyUI 对 steps/cfg/width/height/seed 做数值校验，字符串会直接报错；
+    而从 `.env`、项目 extra 或 HTTP 入参拿到的值可能是字符串（"28"、"4.0"），
+    所以在这里统一收口。转不动就保留原值，交给 ComfyUI 报出可读错误。
+    """
+    out = dict(mapping)
+    for key in _INT_KEYS:
+        if key in out and out[key] is not None:
+            try:
+                out[key] = int(float(out[key]))
+            except (TypeError, ValueError):
+                pass
+    for key in _FLOAT_KEYS:
+        if key in out and out[key] is not None:
+            try:
+                out[key] = float(out[key])
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 def _substitute(node: Any, mapping: dict[str, Any]) -> Any:
@@ -148,6 +188,11 @@ def _load_one(path: Path) -> WorkflowTemplate:
     _scan_placeholders(raw, found)
     models: set[str] = set()
     _scan_models(raw, models)
+    defaults = meta.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+    # 只有模板里真的写了该占位符，默认值才有意义（避免 defaults 里出现无关键）
+    defaults = {k: v for k, v in defaults.items() if k in found}
     return WorkflowTemplate(
         key=meta.get("key") or path.stem,
         path=path,
@@ -157,6 +202,7 @@ def _load_one(path: Path) -> WorkflowTemplate:
         placeholders=tuple(sorted(found)),
         models=tuple(sorted(models)),
         max_frames=meta.get("max_frames"),
+        defaults=defaults,
     )
 
 

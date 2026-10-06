@@ -115,7 +115,12 @@ def _prepare_image_size(db, project: Project, *, provider: str | None,
                        "description": "分辨率档位。由 Provider 能力声明校验；不传则用项目默认尺寸"},
         "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:2"],
                          "description": "画幅。仅在与 resolution 同传时生效"},
-        "width": {"type": "integer"}, "height": {"type": "integer"}, "seed": {"type": "integer"}},
+        "width": {"type": "integer"}, "height": {"type": "integer"}, "seed": {"type": "integer"},
+        "steps": {"type": "integer",
+                  "description": "采样步数，覆盖工作流模板默认值（如 20）。不传则用模板默认值"},
+        "cfg": {"type": "number",
+                "description": "CFG 强度，覆盖工作流模板默认值（如 2.5）。"
+                               "注意：cfg 是「换一个版式」的旋钮，不是「画质高低」的旋钮"}},
         "required": ["shot_id"]},
 )
 def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = None,
@@ -123,7 +128,8 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
                    workflow_name: str | None = None, workflow_json: dict[str, Any] | None = None,
                    resolution: str | None = None, aspect_ratio: str | None = None,
                    width: int | None = None, height: int | None = None,
-                   seed: int | None = None):
+                   seed: int | None = None,
+                   steps: int | None = None, cfg: float | None = None):
     shot = _shot(ctx.db, shot_id)
     project = _project(ctx.db, project_id or shot.project_id)
     size = _prepare_image_size(ctx.db, project, provider=provider, resolution=resolution,
@@ -135,7 +141,7 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
     task = tasks_svc.create_task(
         ctx.db, project_id=project.id, type=TaskType.GENERATE_IMAGE,
         name=f"生成关键帧 {shot.code}", shot_id=shot.id,
-        payload={"provider": provider, "seed": seed,
+        payload={"provider": provider, "seed": seed, "steps": steps, "cfg": cfg,
                  "width": size["width"], "height": size["height"],
                  "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"],
                  "workflow_name": workflow_name, "workflow_json": workflow_json},
@@ -163,6 +169,8 @@ def generate_image(ctx: SkillContext, *, shot_id: str, project_id: str | None = 
         "resolution": {"type": "string", "enum": ["720p", "1080p", "2K", "4K"]},
         "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:2"]},
         "width": {"type": "integer"}, "height": {"type": "integer"},
+        "steps": {"type": "integer", "description": "采样步数，覆盖工作流模板默认值"},
+        "cfg": {"type": "number", "description": "CFG 强度，覆盖工作流模板默认值"},
         "keep_old": {"type": "boolean", "default": True}},
         "required": ["shot_id"]},
 )
@@ -172,6 +180,7 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
                      workflow_json: dict[str, Any] | None = None,
                      resolution: str | None = None, aspect_ratio: str | None = None,
                      width: int | None = None, height: int | None = None,
+                     steps: int | None = None, cfg: float | None = None,
                      keep_old: bool = True):
     shot = _shot(ctx.db, shot_id)
     project = _project(ctx.db, shot.project_id)
@@ -187,6 +196,7 @@ def regenerate_image(ctx: SkillContext, *, shot_id: str, provider: str | None = 
         ctx.db, project_id=shot.project_id, type=TaskType.GENERATE_IMAGE,
         name=f"重生成关键帧 {shot.code}", shot_id=shot.id,
         payload={"provider": provider, "seed": seed, "regenerate": True, "keep_old": keep_old,
+                 "steps": steps, "cfg": cfg,
                  "width": size["width"], "height": size["height"],
                  "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"],
                  "workflow_name": workflow_name, "workflow_json": workflow_json},
@@ -364,6 +374,8 @@ def get_video_generation_status(ctx: SkillContext, *, task_id: str | None = None
         "concurrency": {"type": "integer", "default": 1,
                         "description": "并发数。本地 ComfyUI 串行更稳，建议 1"},
         "only_missing": {"type": "boolean", "default": True},
+        "steps": {"type": "integer", "description": "采样步数，整批统一，覆盖模板默认值"},
+        "cfg": {"type": "number", "description": "CFG 强度，整批统一，覆盖模板默认值"},
         "force": {"type": "boolean", "default": False,
                   "description": "True 时忽略已有关键帧强制重生成（切换工作流后全量重跑）"}}, "required": ["project_id"]},
 )
@@ -371,6 +383,7 @@ def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | N
                         workflow_name: str | None = None,
                         resolution: str | None = None, aspect_ratio: str | None = None,
                         width: int | None = None, height: int | None = None,
+                        steps: int | None = None, cfg: float | None = None,
                         concurrency: int = 1,
                         only_missing: bool = True, force: bool = False) -> dict[str, Any]:
     project = _project(ctx.db, project_id)
@@ -393,6 +406,7 @@ def generate_all_images(ctx: SkillContext, *, project_id: str, provider: str | N
             ctx.db, project_id=project_id, type=TaskType.GENERATE_IMAGE,
             name=f"生成关键帧 {shot.code}", shot_id=shot.id,
             payload={"provider": provider, "workflow_name": workflow_name, "force": force,
+                     "steps": steps, "cfg": cfg,
                      "width": size["width"], "height": size["height"],
                      "resolution": size["resolution"], "aspect_ratio": size["aspect_ratio"]},
             parent_task_id=parent.id, created_by=ctx.actor, commit=False,
@@ -719,6 +733,13 @@ def retry_failed_tasks(ctx: SkillContext, *, project_id: str) -> dict[str, Any]:
         "scene_prompt_prefix": {"type": "string", "description": "场景图 prompt 统一前缀（画风锚定）"},
         "character_prompt_prefix": {"type": "string", "description": "人物图 prompt 统一前缀"},
         "negative_prompt": {"type": "string", "description": "统一负向词"},
+        "inject_scene_prefix": {"type": "boolean",
+                                "description": "是否把 scene_prompt_prefix 自动前置到每个镜头的提示词。"
+                                               "默认 true。想完全复刻自己在 ComfyUI 里写的提示词时设为 false"},
+        "image_steps": {"type": "integer",
+                        "description": "本项目出图统一采样步数，覆盖工作流模板默认值（如 20）"},
+        "image_cfg": {"type": "number",
+                      "description": "本项目出图统一 CFG 强度，覆盖模板默认值（如 2.5）"},
     }, "required": ["project_id"]},
 )
 def set_image_provider(ctx: SkillContext, *, project_id: str, image_provider: str | None = None,
@@ -728,7 +749,10 @@ def set_image_provider(ctx: SkillContext, *, project_id: str, image_provider: st
                        video_workflow_name: str | None = None,
                        scene_prompt_prefix: str | None = None,
                        character_prompt_prefix: str | None = None,
-                       negative_prompt: str | None = None) -> dict[str, Any]:
+                       negative_prompt: str | None = None,
+                       inject_scene_prefix: bool | None = None,
+                       image_steps: int | None = None,
+                       image_cfg: float | None = None) -> dict[str, Any]:
     project = _project(ctx.db, project_id)
 
     # 校验模板名，避免写进去一个拼错的名字、跑到出图时才发现
@@ -750,7 +774,10 @@ def set_image_provider(ctx: SkillContext, *, project_id: str, image_provider: st
                        ("video_workflow_name", video_workflow_name),
                        ("scene_prompt_prefix", scene_prompt_prefix),
                        ("character_prompt_prefix", character_prompt_prefix),
-                       ("negative_prompt", negative_prompt)):
+                       ("negative_prompt", negative_prompt),
+                       ("inject_scene_prefix", inject_scene_prefix),
+                       ("image_steps", image_steps),
+                       ("image_cfg", image_cfg)):
         if value is not None:
             extra[key] = value
             changes[key] = value

@@ -2,7 +2,8 @@
   "__meta__": {
     "key": "qwen_edit_scene",
     "kind": "image",
-    "description": "Qwen-Image-Edit 2511 参考图编辑 —— 以角色定妆图为底图生成镜头关键帧，原生中文 prompt，人物一致性最强。占位符：{{prompt}} {{negative_prompt}} {{width}} {{height}} {{seed}} {{reference_image}}",
+    "description": "Qwen-Image-Edit 2511 参考图编辑 —— 以角色定妆图为底图生成镜头关键帧，原生中文 prompt，人物一致性最强。占位符：{{prompt}} {{negative_prompt}} {{width}} {{height}} {{seed}} {{steps}} {{cfg}} {{reference_image}}",
+    "defaults": {"steps": 30, "cfg": 2.5},
     "note": "结构按官方 edit graph：TextEncodeQwenImageEditPlus(带VAE+图) → FluxKontextMultiReferenceLatentMethod(index_timestep_zero) → ModelSamplingAuraFlow(shift 3.0) + CFGNorm；latent 来自 VAEEncode(缩放后的参考图)，负向 prompt 尾部补空格（空串会 NaN）。模型：qwen_image_edit_2511_w4a8 + qwen_2.5_vl_7b_fp8_scaled + qwen_image_vae"
   },
   "1": {
@@ -103,8 +104,8 @@
       "negative": ["9", 0],
       "latent_image": ["10", 0],
       "seed": "{{seed}}",
-      "steps": 30,
-      "cfg": 2.5,
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1

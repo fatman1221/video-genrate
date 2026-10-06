@@ -112,7 +112,11 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
 
     # 项目级画风锚定：set_image_provider 写进 project.extra 的前缀/负向词在此生效。
     # 没有它的话，22 个镜头各自成图、色调与质感会明显跳。
+    # ⚠️ 但它是**静默注入**的：想「完全复刻自己在 ComfyUI 里写的那段提示词」时，
+    #    在项目 extra 里设 "inject_scene_prefix": false 即可关掉（默认开，行为不变）。
     prefix = (proj_extra.get("scene_prompt_prefix") or "").strip()
+    inject_prefix = _flag(proj_extra.get("inject_scene_prefix"), True)
+    prefix_applied = False
 
     # ---------------------------------------------------------------- #
     # 提示词与参考图来源：**新层（编译产物）优先，老字段兜底**
@@ -137,8 +141,9 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
 
     if prompt is None:  # 老链路：未编译过
         prompt = shot.image_prompt or shot.description or shot.code
-        if prefix and not prompt.startswith(prefix):
+        if prefix and inject_prefix and not prompt.startswith(prefix):
             prompt = f"{prefix}, {prompt}"
+            prefix_applied = True
         negative = shot.negative_prompt or proj_extra.get("negative_prompt") or ""
 
     # 人物一致性：镜头若绑定角色，取该角色最新的定妆图作为参考图
@@ -161,6 +166,7 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
     width = int(payload.get("width") or project.width or settings.default_image_width)
     height = int(payload.get("height") or project.height or settings.default_image_height)
 
+    steps, cfg = _sampler_overrides(payload, proj_extra)
     result = provider.generate(
         prompt=prompt, negative_prompt=negative or "",
         width=width, height=height,
@@ -177,6 +183,13 @@ def _ensure_shot_image(ctx: TaskContext, shot: Shot, project: Project) -> Asset:
             "workflow_name": _resolve_workflow_name(payload, project, kind="scene"),
             "workflow_json": payload.get("workflow_json"),
             "timeout": settings.comfyui_timeout,
+            # 采样参数覆盖（None = 用模板默认值）。有了它，Studio 里才能复刻
+            # 在 ComfyUI 里调好的那套 steps / cfg。
+            "steps": steps, "cfg": cfg,
+            # 审计用：到底哪段文字进了模型、画风前缀有没有被动过。
+            # 「提示词被静默改写」是历史上最难查的一类问题。
+            "final_prompt": prompt,
+            "prefix_injected": prefix_applied,
         },
     )
     asset = assets_svc.ingest_result(
@@ -239,6 +252,37 @@ def _workdir(ctx: TaskContext, sub: str) -> Path:
     root = settings.storage_path / "temp" / ctx.task.project_id / sub
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _flag(value: Any, default: bool = True) -> bool:
+    """把项目 extra 里的开关读成 bool。
+
+    容忍 JSON 的 true/false，也容忍手写配置常见的 "false"/"0"/"off"/"关闭"
+    —— 这类值在 extra 里很容易写成字符串，静默取反会让人以为开关坏了。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {
+        "0", "false", "no", "off", "disable", "disabled", "none", "关", "关闭",
+    }
+
+
+def _sampler_overrides(payload: dict[str, Any],
+                       proj_extra: dict[str, Any]) -> tuple[Any, Any]:
+    """采样参数覆盖值：**单次任务 > 项目固化 > 模板默认**。
+
+    返回 (steps, cfg)。两者都可能为 None —— 表示"没指定"，
+    由工作流模板 `__meta__.defaults` 兜底，而不是在这里写死一个数。
+    """
+    def pick(key: str, extra_key: str) -> Any:
+        value = payload.get(key)
+        if value is None:
+            value = proj_extra.get(extra_key)
+        return value
+
+    return pick("steps", "image_steps"), pick("cfg", "image_cfg")
 
 
 def _resolve_workflow_name(payload: dict[str, Any], project: Project, *, kind: str) -> str | None:
@@ -374,15 +418,22 @@ def handle_character_reference(ctx: TaskContext) -> dict[str, Any]:
             "timeout": settings.comfyui_timeout,
         },
     }
+    steps, cfg = _sampler_overrides(payload, proj_extra)
+    common["parameters"].update({"steps": steps, "cfg": cfg})
+
+    def _gen(text: str, seed: int | None):
+        """角色图统一出口：一并记录「实际送进模型的那段提示词」，便于事后审计。"""
+        return provider.generate(
+            prompt=text, width=project.width // 2, height=project.height, seed=seed,
+            negative_prompt=common["negative_prompt"],
+            parameters={**common["parameters"], "final_prompt": text},
+        )
 
     # ---------------------------------------------------------------- 单张模式
     if not is_variant_run:
         ctx.event("character.started", f"开始生成 Character: {char.name}")
         ctx.progress(15, f"生成角色参考图：{char.name}")
-        result = provider.generate(
-            prompt=_compose(base_prompt), width=project.width // 2, height=project.height,
-            seed=payload.get("seed"), **common,
-        )
+        result = _gen(_compose(base_prompt), seed=payload.get("seed"))
         asset = assets_svc.ingest_result(
             ctx.db, project_id=project.id, result=result, asset_type=AssetType.CHARACTER,
             name=f"{char.name} 参考图", character_id=char.id, task_id=ctx.task.id,
@@ -436,10 +487,7 @@ def handle_character_reference(ctx: TaskContext) -> dict[str, Any]:
         if seed is None and base_seed is not None:
             seed = int(base_seed) + idx
         try:
-            result = provider.generate(
-                prompt=text, width=project.width // 2, height=project.height,
-                seed=seed, **common,
-            )
+            result = _gen(text, seed=seed)
             asset = assets_svc.ingest_result(
                 ctx.db, project_id=project.id, result=result, asset_type=AssetType.CHARACTER,
                 name=f"{char.name} 定妆候选 · {label}", character_id=char.id,

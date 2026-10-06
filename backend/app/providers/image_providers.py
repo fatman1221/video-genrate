@@ -22,6 +22,13 @@ from .base import GenerationResult, ImageProvider, ProviderError, registry
 from . import local_engine as engine
 from . import runtime
 
+#: 可由调用方覆盖的采样参数。只有当工作流模板里**真的写了**对应的
+#: `{{steps}}` / `{{cfg}}` 占位符时才会生效；模板没写就保持模板字面量。
+_SAMPLER_OVERRIDE_KEYS = ("steps", "cfg")
+
+#: 抄回落库时关心的采样字段（既含可覆盖的，也含只读的，便于复盘）
+_SAMPLER_TRACE_KEYS = ("steps", "cfg", "sampler_name", "scheduler", "denoise", "seed")
+
 
 class LocalImageProvider(ImageProvider):
     name = "local"
@@ -116,15 +123,25 @@ class ComfyUIImageProvider(ImageProvider):
                  reference_image: str | None = None,
                  parameters: dict[str, Any] | None = None) -> GenerationResult:
         params = dict(parameters or {})
+        # ⚠️ 真实 seed 必须在这里算一次、全程复用。
+        # 历史实现把 `seed or int(time.time()) % 2**31` 写在 _substitute 的入参里，
+        # 而落库的 parameters 里**没有 seed** —— 结果是「出了好图也复现不了」，
+        # 也没法把满意的随机结果固定下来。现在 actual_seed 同时用于提交与留痕。
+        actual_seed = int(seed) if seed is not None else int(time.time()) % 2**31
         workflow = _resolve_workflow(params, prompt=prompt, negative_prompt=negative_prompt,
-                                     width=width, height=height, seed=seed)
+                                     width=width, height=height, seed=actual_seed)
         started = time.time()
+        # 其余占位符已在 _resolve_workflow 里渲染完；这里再铺一遍是为了兼容
+        # 调用方直接给 workflow_json（未经模板渲染）的情况。
+        base_mapping: dict[str, Any] = {
+            "prompt": prompt, "negative_prompt": negative_prompt,
+            "width": int(width or 0), "height": int(height or 0), "seed": actual_seed,
+            **{k: v for k, v in params.items()
+               if k in _SAMPLER_OVERRIDE_KEYS and v is not None},
+        }
         # {{reference_image}} 在上传后才能替换（需要 input 目录的相对文件名），
         # 若最终仍未替换则清空占位符，避免 JSON 里留下非法字符串
-        resolved = _substitute(workflow, {
-            "prompt": prompt, "negative_prompt": negative_prompt,
-            "width": width, "height": height, "seed": seed or int(time.time()) % 2**31,
-        })
+        resolved = _substitute(workflow, base_mapping)
         client_id = f"video-agent-{int(time.time())}"
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -184,12 +201,16 @@ class ComfyUIImageProvider(ImageProvider):
                 w, h = im.size
         except Exception:  # pragma: no cover
             pass
+        # 把工作流里**实际生效**的采样参数抄回来落库：模板默认值与入参可能不同，
+        # 只记入参会漏掉「这次到底跑了几步 / 多少 cfg」。
+        sampler = _extract_sampler_params(resolved)
         return GenerationResult(
             file_path=str(out), provider=self.name,
             model=params.get("ckpt_name") or runtime.model_of("image", "comfyui") or "comfyui",
-            workflow=params.get("workflow_name", "comfyui_default"), parameters=params,
+            workflow=params.get("workflow_name", "comfyui_default"),
+            parameters={**params, **sampler, "width": w, "height": h, "seed": actual_seed},
             width=w, height=h, format=out.suffix.lstrip("."), size_bytes=out.stat().st_size,
-            prompt=prompt, negative_prompt=negative_prompt, seed=seed,
+            prompt=prompt, negative_prompt=negative_prompt, seed=actual_seed,
             extra={"prompt_id": prompt_id, "images": images},
             elapsed_ms=int((time.time() - started) * 1000),
         )
@@ -266,6 +287,29 @@ class CloudImageProvider(ImageProvider):
 _ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
 
 
+def _extract_sampler_params(workflow: dict[str, Any]) -> dict[str, Any]:
+    """把工作流里**实际生效**的采样参数抄回来，用于落库留痕。
+
+    为什么要"抄"而不是直接用入参：模板自带默认值、调用方可能根本没传。
+    只记入参会漏掉「这次到底跑了几步 / 多少 cfg / 哪个采样器」，而生成本身不可复现时，
+    **记录是唯一退路**（本项目反复踩过"任务 SUCCESS 但说不清产物怎么来的"）。
+
+    节点值是 list/dict 的（如 model 引用）一律跳过，只抄标量。
+    """
+    picked: dict[str, Any] = {}
+    for node in workflow.values():
+        if not isinstance(node, dict) or node.get("class_type") != "KSampler":
+            continue
+        inputs = node.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            continue
+        for key in _SAMPLER_TRACE_KEYS:
+            value = inputs.get(key)
+            if value is not None and not isinstance(value, (dict, list)):
+                picked.setdefault(key, value)
+    return picked
+
+
 def _resolve_workflow(params: dict[str, Any], *, prompt: str, negative_prompt: str,
                       width: int, height: int, seed: int | None) -> dict[str, Any]:
     """拿到本次要提交的工作流。
@@ -306,7 +350,13 @@ def _resolve_workflow(params: dict[str, Any], *, prompt: str, negative_prompt: s
 
     return template.render(
         prompt=prompt, negative_prompt=negative_prompt,
-        width=width, height=height, seed=seed or int(time.time()) % 2**31,
+        width=width, height=height,
+        # ⚠️ 用显式 None 判断而不是 `seed or ...`：seed=0 是合法种子，
+        # 用 or 会把它当假值丢掉、悄悄换成随机种子。
+        seed=seed if seed is not None else int(time.time()) % 2**31,
+        # 模板里写了 {{steps}} / {{cfg}} 才生效；没写则保留模板自带默认值
+        **{k: v for k, v in params.items()
+           if k in _SAMPLER_OVERRIDE_KEYS and v is not None},
     )
 
 

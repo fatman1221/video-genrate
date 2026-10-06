@@ -23,6 +23,8 @@ from .image_providers import (
     _humanize_comfy_error,
     _resolve_workflow,
     _substitute,
+    _extract_sampler_params,
+    _SAMPLER_OVERRIDE_KEYS,
 )
 
 _MOTION_KEYWORDS = (
@@ -202,12 +204,16 @@ class ComfyUIVideoProvider(VideoProvider):
             frames = int(max_frames)
 
         started = time.time()
+        # ⚠️ 与图像通道同理：真实 seed 必须算一次全程复用并落库，否则出片不可复现。
+        actual_seed = int(seed) if seed is not None else int(time.time()) % 2**31
         resolved = _resolve_workflow(params, prompt=prompt, negative_prompt="",
-                                     width=width, height=height, seed=seed)
+                                     width=width, height=height, seed=actual_seed)
         # 注意：{{image}} 此处不能替换 —— 上传完成后用 input 目录里的相对文件名替换
         resolved = _substitute(resolved, {
             "prompt": prompt, "width": width, "height": height,
-            "frames": frames, "seed": seed or int(time.time()) % 2**31,
+            "frames": frames, "seed": actual_seed,
+            **{k: v for k, v in params.items()
+               if k in _SAMPLER_OVERRIDE_KEYS and v is not None},
         })
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -280,13 +286,18 @@ class ComfyUIVideoProvider(VideoProvider):
         out = self._conform_video(out, width=width, height=height, fps=int(fps or 24),
                                   duration=float(duration), workdir=workdir)
         info = engine.ffprobe(out)
+        sampler = _extract_sampler_params(resolved)
         return GenerationResult(
             file_path=str(out), provider=self.name, model=params.get("ckpt_name", "comfyui-video"),
-            workflow=params.get("workflow_name", "comfyui_video"), parameters=params,
+            workflow=params.get("workflow_name", "comfyui_video"),
+            parameters={**params, **sampler, "seed": actual_seed,
+                        "width": info["width"] or width, "height": info["height"] or height,
+                        "frames": frames},
             width=info["width"] or width, height=info["height"] or height,
             duration=info["duration"] or duration, fps=info["fps"] or fps,
             format=out.suffix.lstrip("."), size_bytes=info["size_bytes"],
-            prompt=prompt, seed=seed, extra={"prompt_id": prompt_id, "source_image": image_ref},
+            prompt=prompt, seed=actual_seed,
+            extra={"prompt_id": prompt_id, "source_image": image_ref},
             elapsed_ms=int((time.time() - started) * 1000),
         )
 
